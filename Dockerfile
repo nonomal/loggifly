@@ -8,8 +8,8 @@ WORKDIR /app
 # Anforderungen (Bibliotheken) in den Container kopieren
 COPY requirements.txt .
 
-##
-#LABEL org.opencontainers.image.source="https://github.com/clemcer/loggifly"
+
+# LABEL org.opencontainers.image.source="https://github.com/clemcer/loggifly"
 
 # Installiere die Abhängigkeiten
 RUN pip install --no-cache-dir -r requirements.txt

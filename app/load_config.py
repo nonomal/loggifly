@@ -25,9 +25,9 @@ class NtfyConfig(BaseModel):
 
     url: str = Field(..., description="Ntfy server URL")
     topic: str = Field(..., description="Ntfy topic name")
-    token: SecretStr = Field(default=None, description="Optional access token")
-    priority: Union[str, int] = Field(default=3, description="Message priority 1-5")
-    tags: str = Field("kite,mag", description="Comma-separated tags")
+    token: Optional[SecretStr] = Field(default=None, description="Optional access token")
+    priority: Optional[Union[str, int]] = Field(default=3, description="Message priority 1-5")
+    tags: Optional[str] = Field("kite,mag", description="Comma-separated tags")
 
     @field_validator("priority")
     def validate_priority(cls, v):
@@ -42,7 +42,7 @@ class NtfyConfig(BaseModel):
         if isinstance(v, str):
             options = ["max", "urgent", "high", "default", "low", "min"]
             if v not in options:
-                raise ValueError(f"Priority must be one of {options}")
+                raise ValueError(f"Priority must be one of {options} or a number between 1-5")
         return v
 
 class AppriseConfig(BaseModel):  
@@ -177,12 +177,16 @@ def merge_yaml_and_env(yaml, env_update):
 
 def load_config(path="/app/config.yaml"):
     yaml_config = {}
-    try:
-        with open(path, "r") as file:
-            yaml_config = yaml.safe_load(file)
-            logging.info("config.yaml succesfully loaded.")
-            no_config_file = False
-    except FileNotFoundError:
+    if os.path.isfile(path):
+        try:
+            with open(path, "r") as file:
+                yaml_config = yaml.safe_load(file)
+                logging.info("config.yaml succesfully loaded.")
+                no_config_file = False
+        except FileNotFoundError:
+            logging.warning("config.yaml not found. Only using environment variables.")
+            no_config_file = True
+    else:
         logging.warning("config.yaml not found. Only using environment variables.")
         no_config_file = True
     """
