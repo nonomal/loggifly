@@ -74,8 +74,8 @@ class NtfyConfig(BaseConfigModel):
     token: Optional[SecretStr] = Field(default=None, description="Optional access token")
     username: Optional[str] = Field(default=None, description="Optional username")
     password: Optional[SecretStr] = Field(default=None, description="Optional password")
-    priority: Union[str, int] = Field(default=3, description="Message priority 1-5")
-    tags: str = Field("kite,mag", description="Comma-separated tags")
+    priority: Optional[Union[str, int]] = Field(default=3, description="Message priority 1-5")
+    tags: Optional[str] = Field("kite,mag", description="Comma-separated tags")
 
     @field_validator("priority")
     def validate_priority(cls, v):
@@ -234,6 +234,8 @@ def load_config(path="/app/config.yaml"):
             env_config["containers"][c] = {}
     if any(ntfy_values.values()):
         env_config["notifications"]["ntfy"] = ntfy_values
+    else:
+        del yaml_config["notifications"]["ntfy"]
     if apprise_values["url"]: 
         env_config["notifications"]["apprise"] = apprise_values
     for k, v in global_keywords_values.items():
@@ -244,6 +246,7 @@ def load_config(path="/app/config.yaml"):
             env_config["settings"][key] = value
 
     merged_config = merge_yaml_and_env(yaml_config, env_config)
+    print(merged_config)
     config = GlobalConfig.model_validate(merged_config)
     logging.info(f"\n ------------- CONFIG ------------- \n{config.model_dump_json(indent=2, exclude_none=True)}\n ----------------------------------")
 
