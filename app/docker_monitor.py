@@ -5,6 +5,7 @@ import traceback
 import time
 import os
 import random
+import re
 import requests
 import docker
 import docker.errors
@@ -12,46 +13,81 @@ from datetime import datetime
 from notifier import send_notification
 from line_processor import LogProcessor
 
+
+class MonitoredContainerRegistry:
+    def __init__(self):
+        self._by_id = {}
+        self._by_config_key = {}
+        self._by_monitored_object_name = {}
+        self._by_docker_name = {}
+
+    def add(self, container):
+        monitor_type = container["monitor_type"]
+        container_id = container["container_id"]
+        monitored_object_name = container["monitored_object_name"]
+       
+        self._by_id[container_id] = container
+        self._by_monitored_object_name[(monitor_type, monitored_object_name)] = container
+
+    def get_by_id(self, container_id):
+        return self._by_id.get(container_id)
+    
+    def get_by_monitored_object_name(self, monitor_type, monitored_object_name):
+        return self._by_monitored_object_name.get((monitor_type, monitored_object_name))
+            
+    def get_actively_monitored(self, type="all"):
+        """
+        Returns a list of actively monitored containers.
+        """
+        swarm_services =[
+                container for container in self._by_id.values()
+                if not container["monitoring_stopped_event"].is_set() and container["monitor_type"] == "swarm"
+            ]
+        containers = [
+                container for container in self._by_id.values()
+                if not container["monitoring_stopped_event"].is_set() and container["monitor_type"] == "container"
+            ]
+        if type == "swarm":
+            return swarm_services
+        elif type == "container":   
+            return containers
+        else:
+            return swarm_services + containers
+
+    def update_id(self, old_id, new_id):
+        if (container := self._by_id.pop(old_id, None)) is not None:
+            container["container_id"] = new_id
+            self._by_id[new_id] = container
+
+    def values(self):
+        return self._by_id.values()
+
+    def __contains__(self, container):
+        return container in self._by_id.values()
+
+
 class DockerLogMonitor:
     """
     Monitors Docker containers and events for a given host.
 
     Starts a thread for each monitored container and a thread for Docker event monitoring.
     Handles config reloads, container start/stop, and log processing.
-
-    Some important Attributes:
-    ----------
-    processor_instances : dict[str, dict]
-        Maps container name to a dict with:
-            - 'processor': LogProcessor instance (processes log lines, supports config reloads)
-            - 'container_stop_event': threading.Event to signal log monitoring thread shutdown
-            - 'generation': int, incremented for each new monitoring thread per container
-    stream_connections : dict[str, Any]
-        Maps container name to the active log stream connection (used to release blocking log streams and stop threads).
-    monitored_containers : dict[str, docker.models.containers.Container]
-        Maps container ID to the currently monitored Docker container object.
-    selected_containers : list[str]
-        Names of containers configured to be monitored for this host.
-    selected_swarm_services : list[str]
-        Names of swarm services configured to be monitored (if in swarm mode).
     """
     def __init__(self, config, hostname, host):
         self.hostname = hostname  # empty string if only one client is being monitored, otherwise the hostname of the client do differentiate between the hosts
         self.host = host
         self.config = config
         self.swarm_mode = os.getenv("LOGGIFLY_MODE", "").strip().lower() == "swarm"
+        # self.monitor_type = "swarm" if self.swarm_mode else "container"
+        self._registry = MonitoredContainerRegistry()
+        self.registry_lock = threading.Lock()
+        self.event_stream = None
 
         self.shutdown_event = threading.Event()
         self.cleanup_event = threading.Event()
         self.threads = []
         self.threads_lock = threading.Lock()
-        self.processor_instances = {}
-        self.processors_lock = threading.Lock()
-
-        self.stream_connections = {}
-        self.stream_connections_lock = threading.Lock()
-        self.monitored_containers = {}
-
+        
     def init_logging(self):
         """
         Configure logger to include hostname for multi-host or swarm setups.
@@ -72,37 +108,93 @@ class DockerLogMonitor:
         with self.threads_lock:
             self.threads.append(thread)
 
-    def _add_processor_instance(self, processor, container_stop_event, container_name):
-        with self.processors_lock:
-            if container_name not in self.processor_instances:
-                self.processor_instances[container_name] = {
-                    "processor": processor,
-                    "container_stop_event": container_stop_event,
-                    "generation": 0
-                }
-                return True
-            else:
-                return False
 
-    def _add_stream_connection(self, container_name, connection):
-        with self.stream_connections_lock:
-            self.stream_connections[container_name] = connection
+    def _get_monitor_context(self, container):
+        """Helper method to determine container monitoring context."""
+        if self.swarm_mode and (monitored_object_name := self._get_swarm_if_selected(container)):
+            configured_name = self._get_swarm_if_selected(container, return_configured_name=True)
+            return "swarm", configured_name, monitored_object_name
+        
+        if container.name in self.selected_containers:
+            return "container", container.name, container.name
+        
+        return None
 
-    def _close_stream_connection(self, container_name):
-        # Close and remove the log stream connection for a container
-        stream = self.stream_connections.get(container_name)
-        container_stop_event = self.processor_instances[container_name]["container_stop_event"]
-        container_stop_event.set()
-        if stream:
-            self.logger.info(f"Closing Log Stream connection for {container_name}")
-            try:
-                stream.close()
-                self.stream_connections.pop(container_name)
-            except Exception as e:
-                self.logger.warning(f"Error trying do close log stream for {container_name}: {e}")
+    def _maybe_monitor_container(self, container, monitor_context=None):
+        """
+        Check if a container should be monitored based on its name and config.
+        Returns True if the container should be monitored, False otherwise.
+        """
+        monitor_context = monitor_context or self._get_monitor_context(container)
+        if not monitor_context:
+            return False
+
+        monitor_type, configured_name, monitored_object_name = monitor_context
+        self.logger.info(f"New Container to monitor: {container.name}")
+
+        if container_context := self._registry.get_by_monitored_object_name(monitor_type, monitored_object_name):          
+            self.logger.debug(f"{monitored_object_name}: Already in registry.")
+            container_context["generation"] += 1
+            # Close old stream connection to stop old monitoring thread if it exists
+            self._close_stream_connection(container_context["container_id"])
+            if not container_context["monitoring_stopped_event"].wait(2):
+                self.logger.warning(f"Old monitoring thread for {monitored_object_name} might not have been closed.")
+            self.logger.debug(f"{monitored_object_name}: Re-Using old context")
+            self._registry.update_id(container_context["container_id"], container.id)
+            self.logger.debug(f"{monitored_object_name}: Context: {container_context}")
         else:
-            self.logger.debug(f"Could not find log stream connection for container {container_name}")
+            monitor_stop_event = threading.Event()
 
+            container_context = ({
+                "monitor_type": monitor_type,
+                "config_key": configured_name,
+                "monitored_object_name": monitored_object_name,
+                "docker_name": container.name,
+                "container_id": container.id,
+                "generation": 0,
+                "monitor_stop_event": monitor_stop_event,
+                "monitoring_stopped_event": threading.Event(),
+                "log_stream": None,  # Will be set when the log stream is opened
+            })
+            with self.registry_lock:
+                self._registry.add(container_context)
+            processor = LogProcessor(self.logger, 
+                    self.config, 
+                    monitored_object_name=monitored_object_name,
+                    monitor_instance=self,
+                    container_stop_event=monitor_stop_event, 
+                    hostname=self.hostname, 
+                    monitor_type=monitor_type,
+                    config_key=configured_name)
+            # Add the processor to the container context after it has been added to the registry
+            # This ensures that tail_logs and other methods can access the processor instance when it is created
+            container_context["processor"] = processor
+
+        container_context["monitor_stop_event"].clear()
+        self._monitor_container(container, container_context)
+        return True
+        
+    def _close_stream_connection(self, container_id):
+        if not container_id:
+            self.logger.debug("No container_id provided to close stream connection.")
+            return
+        if container_context := self._registry.get_by_id(container_id):
+            monitored_object_name = container_context["monitored_object_name"]
+            if stream := container_context.get("log_stream"):
+                with self.registry_lock:
+                    container_stop_event = container_context["monitor_stop_event"]
+                    container_stop_event.set()
+                    self.logger.info(f"Closing Log Stream connection for {monitored_object_name}")
+                    try:
+                        stream.close()
+                        container_context["log_stream"] = None
+                    except Exception as e:
+                        self.logger.warning(f"Error trying do close log stream for {monitored_object_name}: {e}")
+            else:
+                self.logger.debug(f"No log stream found for container_id ({monitored_object_name}). Nothing to close.")
+        else:
+            self.logger.debug(f"Could not find container context for container_id {container_id}. Cannot close stream connection.")
+   
     def _get_selected_containers(self):
         # Build lists of containers and swarm services to monitor based on config
         self.selected_containers = []
@@ -128,16 +220,35 @@ class DockerLogMonitor:
                         continue
                 self.selected_swarm_services.append(swarm)
 
-    def _check_if_swarm_to_monitor(self, container):
+    def _get_swarm_if_selected(self, container, return_configured_name=False):
+        def get_name_with_replica(service_name, task_id, task_name):
+            if not any([service_name, task_id, task_name]):
+                return None
+            # Erstelle Regex: service_name.<replica>.<task_id>
+            pattern = re.escape(service_name) + r"\.(\d+)\." + re.escape(task_id) + r"$"
+            regex = re.compile(pattern)
+            match = regex.search(task_name)
+            if match:
+                return f"{service_name}.{match.group(1)}"
+            else:
+                return None
+                
         # Return the configured swarm service name if the container belongs to a monitored swarm service
         if container is None:
             return None
         labels = container.labels
         service_name = labels.get("com.docker.swarm.service.name", "")
-        if service_name:
+        stack_name = labels.get("com.docker.stack.namespace", "")
+        task_id = labels.get("com.docker.swarm.task.id")
+        task_name = labels.get("com.docker.swarm.task.name")
+
+        if service_name or stack_name:
             for configured in self.selected_swarm_services:
-                if service_name.startswith(configured):
-                    return configured
+                if configured == service_name or configured == stack_name:
+                    if return_configured_name:
+                        return configured
+                    else:
+                        return get_name_with_replica(service_name, task_id, task_name) or service_name or stack_name or container.name
         return None
 
     # This function is called from outside this class to start the monitoring
@@ -172,19 +283,10 @@ class DockerLogMonitor:
         self._get_selected_containers()
 
         for container in self.client.containers.list():
-            if self.swarm_mode:
-                # if the container belongs to a swarm service that is set in the config the service name has to be saved for later use
-                swarm_service_name = self._check_if_swarm_to_monitor(container)
-                if swarm_service_name:
-                    self.logger.debug(f"Trying to monitor container of swarm service: {swarm_service_name}")
-                    self._monitor_container(container, swarm_service=swarm_service_name)
-                    self.monitored_containers[container.id] = container
-                    continue
-            if container.name in self.selected_containers:
-                self._monitor_container(container)
-                self.monitored_containers[container.id] = container
+            self._maybe_monitor_container(container)
+
         self._watch_events()
-        self._start_message()
+        return self._start_message()
 
     def reload_config(self, config):
         """
@@ -192,9 +294,6 @@ class DockerLogMonitor:
         Called by ConfigHandler when config.yaml changes or on reconnection.
         Updates keywords and settings in processor instances, starts/stops monitoring as needed.
         """
-        if self.swarm_mode:
-            self.logger.debug("Skipping config reload because of Swarm Mode")
-            return
         self.config = config if config is not None else self.config
         self.logger.setLevel(getattr(logging, self.config.settings.log_level.upper(), logging.INFO))
         self._get_selected_containers()
@@ -203,60 +302,72 @@ class DockerLogMonitor:
             return
         try:
             # stop monitoring containers that are no longer in the config
-            stop_monitoring = [c for _, c in self.monitored_containers.items() if c.name not in self.selected_containers]
-            for c in stop_monitoring:
-                container_stop_event = self.processor_instances[c.name]["container_stop_event"]
-                self._close_stream_connection(c.name)
-                self.monitored_containers.pop(c.id)
+            actively_monitored_swarm = self._registry.get_actively_monitored(type="swarm")
+            actively_monitored_containers = self._registry.get_actively_monitored(type="container") 
+            stop_monitoring = (
+                [c for c in actively_monitored_swarm if c["config_key"] not in self.selected_swarm_services]
+                + 
+                [c for c in actively_monitored_containers if c["config_key"] not in self.selected_containers]
+            )
+            # actively_monitored = self._registry.get_actively_monitored(type="all")
+            for container_context in stop_monitoring: 
+                self._close_stream_connection(container_context["container_id"])
+
             # reload config variables in the line processor instances to update keywords and other settings
-            for container in self.processor_instances.keys():
-                processor = self.processor_instances[container]["processor"]
+            reload_processors = (
+                [c for c in self._registry.values() if c["monitor_type"] == "container" and c["config_key"] in self.selected_containers]
+                + 
+                [c for c in self._registry.values() if c["monitor_type"] == "swarm" and c["config_key"] in self.selected_swarm_services]
+            )
+            for context in reload_processors:
+                processor = context["processor"]
                 processor.load_config_variables(self.config)
+            # start monitoring containers that are in the config but not monitored yet
+            for c in self.client.containers.list(): 
+                if monitor_context := self._get_monitor_context(c):
+                    monitor_type, configured_name, monitored_object_name = monitor_context
+                    if (not (context := self._registry.get_by_monitored_object_name(monitor_type, monitored_object_name)) 
+                        or context["monitoring_stopped_event"].is_set()):
+                        self.logger.debug(f"Container {c.name} is not monitored yet. Starting monitoring.")
+                        self._maybe_monitor_container(c, monitor_context=monitor_context)
+                    else:
+                        self.logger.debug(f"Container {c.name} is already monitored. Skipping.")
 
-            # start monitoring new containers that are in the config but not monitored yet
-            containers_to_monitor = [c for c in self.client.containers.list() if c.name in self.selected_containers and c.id not in self.monitored_containers.keys()]
-            for c in containers_to_monitor:
-                self.logger.info(f"New Container to monitor: {c.name}")
-                if self.processor_instances.get(c.name) is not None:
-                    container_stop_event = self.processor_instances[c.name]["container_stop_event"]
-                    container_stop_event.clear()
-                self._monitor_container(c)
-                self.monitored_containers[c.id] = c
-
-            self._start_message(config_reload=True)
+            return self._start_message(config_reload=True)
         except Exception as e:
             self.logger.error(f"Error handling config changes: {e}")
+        return ""
 
     def _start_message(self, config_reload=False):
         # Compose and log/send a summary message about monitored containers and services
-        monitored_containers_message = "\n - ".join(c.name for id, c in self.monitored_containers.items())
-        unmonitored_containers = [c for c in self.selected_containers if c not in [c.name for id, c in self.monitored_containers.items()]]
+        self.logger.debug(f"Selected Containers: {self.selected_containers}")
+        monitored_container_names = [c["monitored_object_name"] for c in self._registry.get_actively_monitored(type="container")]
+        self.logger.debug(f"Monitored Container Names: {monitored_container_names}")
+        monitored_containers_message = "\n - ".join(monitored_container_names)
+        unmonitored_containers = [c for c in self.selected_containers if c not in monitored_container_names]
+        self.logger.debug(f"Unmonitored Containers: {unmonitored_containers}")
         message = (
-            f"These containers are being monitored:\n - {monitored_containers_message}" if self.monitored_containers
+            f"These containers are being monitored:\n - {monitored_containers_message}" if monitored_container_names
             else f"No selected containers are running. Waiting for new containers..."
         )
         message = message + ((f"\n\nThese selected containers are not running:\n - " + '\n - '.join(unmonitored_containers)) if unmonitored_containers else "")
         if self.swarm_mode:
-            monitored_swarm_services = []
-            for c in self.monitored_containers.values():
-                swarm_label = self._check_if_swarm_to_monitor(c)
-                if swarm_label:
-                    monitored_swarm_services.append(swarm_label)
-            unmonitored_swarm_services = [s for s in self.selected_swarm_services if s not in monitored_swarm_services]
-            message = message + ((f"\n\nThese selected Swarm Services are not running:\n - " + '\n - '.join(unmonitored_swarm_services)) if unmonitored_swarm_services else "")
-
-        title = f"LoggiFly: The config file was reloaded" if config_reload else f"LoggiFly started"
-
-        self.logger.info(title + "\n" + message)
-        if ((self.config.settings.disable_start_message is False and config_reload is False)
-            or (config_reload is True and self.config.settings.disable_config_reload_message is False)):
-            send_notification(
-                self.config,
-                container_name="LoggiFly",
-                title=title,
-                hostname=self.hostname,
-                message=message
-            )
+            actively_monitored_swarm = [context for context in self._registry.get_actively_monitored(type="swarm")]
+            unmonitored_swarm_services = [
+                s for s in self.selected_swarm_services if s not in [s["config_key"] for s in actively_monitored_swarm]
+                ]
+            monitored_swarm_service_instances = [s["monitored_object_name"] for s in actively_monitored_swarm]
+            monitored_services_message = "\n - ".join(monitored_swarm_service_instances) if actively_monitored_swarm else ""
+            self.logger.debug(f"Monitored Swarm Services: {actively_monitored_swarm}. Unmonitored Swarm Services: {unmonitored_swarm_services}")
+            message = (message
+                        + (f"\nThese Swarm Services are being monitored:\n - {monitored_services_message}"
+                            if actively_monitored_swarm
+                            else "")
+                        + f"\n\nThese selected Swarm Services are not running:\n - "+ "\n - ".join(unmonitored_swarm_services)
+                        )
+        if self.hostname:
+            message = f"[{self.hostname}]\n" + message
+        return message
 
     def _handle_error(self, error_count, last_error_time, container_name=None):
         """
@@ -288,8 +399,9 @@ class DockerLogMonitor:
 
         time.sleep(random.uniform(0.9, 1.2) * error_count)  # to prevent all threads from trying to reconnect at the same time
         return error_count, last_error_time, False
+    
 
-    def _monitor_container(self, container, swarm_service=None):
+    def _monitor_container(self, container, container_context):
         def check_container(container_start_time, error_count):
             """
             Check if the container is still running and matches the original start time.
@@ -324,35 +436,28 @@ class DockerLogMonitor:
             error_count, last_error_time = 0, time.time()
             too_many_errors = False
 
-            # re-use old line processor instance if it exists, otherwise create a new one
-            if container.name in self.processor_instances:
-                self.logger.debug(f"{container.name}: Re-Using old line processor")
-                with self.processors_lock:
-                    self.processor_instances[container.name]["generation"] += 1
-                    processor = self.processor_instances[container.name]["processor"]
-                    container_stop_event = self.processor_instances[container.name]["container_stop_event"]
-                self._close_stream_connection(container.name)  # close old stream connection if it exists
-                container_stop_event.clear()
-                processor._start_flush_thread()
-            else:
-                container_stop_event = threading.Event()
-                processor = LogProcessor(self.logger, self.hostname, self.config, container, container_stop_event, swarm_service=swarm_service)
-                self._add_processor_instance(processor, container_stop_event, container.name)
-                container_stop_event.clear()
-            gen = self.processor_instances[container.name]["generation"]
-            while not self.shutdown_event.is_set() and not container_stop_event.is_set():
+            nonlocal container_context
+            monitor_stop_event = container_context["monitor_stop_event"]
+            monitoring_stopped_event = container_context["monitoring_stopped_event"]
+            gen = container_context["generation"]  # get the generation of the current thread to check if a new thread is started for this container
+            monitored_object_name = container_context["monitored_object_name"]
+            processor = container_context["processor"]
+
+
+            while not self.shutdown_event.is_set() and not monitor_stop_event.is_set():
                 buffer = b""
                 not_found_error = False
                 try:
                     now = datetime.now()
                     log_stream = container.logs(stream=True, follow=True, since=now)
-                    self._add_stream_connection(container.name, log_stream)
-                    self.logger.info(f"{container.name}: Log Stream started")
+                    container_context["log_stream"] = log_stream  
+                    monitoring_stopped_event.clear()
+                    self.logger.info(f"{monitored_object_name}: Log Stream started")
                     for chunk in log_stream:
                         MAX_BUFFER_SIZE = 10 * 1024 * 1024  # 10MB
                         buffer += chunk
                         if len(buffer) > MAX_BUFFER_SIZE:
-                            self.logger.error(f"{container.name}: Buffer overflow detected for container, resetting")
+                            self.logger.error(f"{monitored_object_name}: Buffer overflow detected for container, resetting")
                             buffer = b""
                         while b'\n' in buffer:
                             line, buffer = buffer.split(b'\n', 1)
@@ -360,29 +465,31 @@ class DockerLogMonitor:
                                 log_line_decoded = str(line.decode("utf-8")).strip()
                             except UnicodeDecodeError:
                                 log_line_decoded = line.decode("utf-8", errors="replace").strip()
-                                self.logger.warning(f"{container.name}: Error while trying to decode a log line. Used errors='replace' for line: {log_line_decoded}")
+                                self.logger.warning(f"{monitored_object_name}: Error while trying to decode a log line. Used errors='replace' for line: {log_line_decoded}")
                             if log_line_decoded:
                                 processor.process_line(log_line_decoded)
                 except docker.errors.NotFound as e:
-                    self.logger.error(f"Container {container} not found during Log Stream: {e}")
+                    self.logger.error(f"Container {monitored_object_name} not found during Log Stream: {e}")
                     not_found_error = True
                 except Exception as e:
-                    error_count, last_error_time, too_many_errors = self._handle_error(error_count, last_error_time, container.name)
+                    error_count, last_error_time, too_many_errors = self._handle_error(error_count, last_error_time, monitored_object_name)
                     if error_count == 1:  # log error only once
-                        self.logger.error("Error trying to monitor %s: %s", container.name, e)
+                        self.logger.error("Error trying to monitor %s: %s", monitored_object_name, e)
                         self.logger.debug(traceback.format_exc())
                 finally:
+                    self.logger.debug(f"{monitored_object_name}: Log Stream ended. gen: {gen}\ncontainer_context: {container_context}")
                     if self.shutdown_event.is_set():
                         break
-                    if gen != self.processor_instances[container.name]["generation"]:  # if there is a new thread running for this container this thread stops
+                    if gen != container_context["generation"]:  # if there is a new thread running for this container this thread stops
+                        self.logger.debug(f"{monitored_object_name}: Stopping monitoring thread because a new thread was started for this container.")
                         break
-                    elif too_many_errors or not_found_error or check_container(container_start_time, error_count) is False or container_stop_event.is_set():
-                        self._close_stream_connection(container.name)
+                    elif too_many_errors or not_found_error or check_container(container_start_time, error_count) is False or monitor_stop_event.is_set():
+                        self._close_stream_connection(container.id)
                         break
                     else:
-                        self.logger.info(f"{container.name}: Log Stream stopped. Reconnecting... {'error count: ' + str(error_count) if error_count > 0 else ''}")
-            self.logger.info(f"{container.name}: Monitoring stopped for container.")
-
+                        self.logger.info(f"{monitored_object_name}: Log Stream stopped. Reconnecting... {'error count: ' + str(error_count) if error_count > 0 else ''}")
+            self.logger.info(f"{monitored_object_name}: Monitoring stopped for container.")
+            monitoring_stopped_event.set()  # signal that the monitoring thread has stopped
         thread = threading.Thread(target=log_monitor, daemon=True)
         self._add_thread(thread)
         thread.start()
@@ -399,29 +506,24 @@ class DockerLogMonitor:
                 too_many_errors = False
                 container = None
                 try:
-                    event_stream = self.client.events(decode=True, filters={"event": ["start", "stop"]}, since=now)
+                    self.event_stream = self.client.events(decode=True, filters={"event": ["start", "stop"]}, since=now)
                     self.logger.info("Docker Event Watcher started. Watching for new containers...")
-                    for event in event_stream:
+                    for event in self.event_stream:
                         if self.shutdown_event.is_set():
                             self.logger.debug("Shutdown event is set. Stopping event handler.")
                             break
                         container_id = event["Actor"]["ID"]
+                        container_name = event["Actor"].get("Attributes", {}).get("name", "")
                         if event.get("Action") == "start":
                             container = self.client.containers.get(container_id)
-                            swarm_label = self._check_if_swarm_to_monitor(container) if self.swarm_mode else None
-                            if swarm_label or container.name in self.selected_containers:
-                                self._monitor_container(container, swarm_service=swarm_label)
+                            if self._maybe_monitor_container(container):
                                 self.logger.info(f"Monitoring new container: {container.name}")
                                 if self.config.settings.disable_container_event_message is False:
                                     send_notification(self.config, "Loggifly", "LoggiFly", f"Monitoring new container: {container.name}", hostname=self.hostname)
-                                self.monitored_containers[container.id] = container
                         elif event.get("Action") == "stop":
-                            if container_id in self.monitored_containers:
-                                container = self.monitored_containers.get(container_id)
-                                if container:
-                                    self.logger.info(f"The Container {container.name} was stopped. Stopping Monitoring now.")
-                                    self.monitored_containers.pop(container_id)
-                                    self._close_stream_connection(container.name)
+                            if container_id in [c.get("container_id") for c in self._registry.values()]:
+                                self.logger.info(f"The Container {container_name or container_id} was stopped. Stopping Monitoring now.")
+                                self._close_stream_connection(container_id)
                 except docker.errors.NotFound as e:
                     self.logger.error(f"Docker Event Handler: Container {container} not found: {e}")
                 except Exception as e:
@@ -435,7 +537,7 @@ class DockerLogMonitor:
                     else:
                         self.logger.info(f"Docker Event Watcher stopped. Reconnecting... {'error count: ' + str(error_count) if error_count > 0 else ''}")
             self.logger.info("Docker Event Watcher stopped.")
-
+            self.event_stream = None
         thread = threading.Thread(target=event_handler, daemon=True)
         self._add_thread(thread)
         thread.start()
@@ -448,9 +550,15 @@ class DockerLogMonitor:
         self.logger.info(f"Starting cleanup " f"for host {self.hostname}..." if self.hostname else "...")
         self.cleanup_event.set()
         self.shutdown_event.set()
-        with self.stream_connections_lock:
-            for container, _ in self.stream_connections.copy().items():
-                self._close_stream_connection(container)
+        for context in self._registry.get_actively_monitored(type="all"):
+            if context.get("log_stream") is not None:
+                self._close_stream_connection(context.get("container_id"))
+        if self.event_stream:
+            try:
+                self.event_stream.close()
+                self.logger.info("Docker Event Stream closed.")
+            except Exception as e:
+                self.logger.warning(f"Error while trying to close Docker Event Stream: {e}")
 
         with self.threads_lock:
             alive_threads = []
@@ -470,3 +578,78 @@ class DockerLogMonitor:
         self.cleanup_event.clear()
         # self.logger.debug(f"Threads still alive {len(alive_threads)}: {alive_threads}")
         # self.logger.debug(f"Threading Enumerate: {threading.enumerate()}")
+
+    def _get_container_by_name(self, container_name):
+        """
+        Get the Docker container object by its name.
+        Returns None if the container is not found.
+        """
+        container = None
+        try:
+            return self.client.containers.get(container_name)
+        except docker.errors.NotFound:
+            pass          
+        except Exception as e:
+            self.logger.error(f"Error while trying to get container {container_name}: {e}")
+        if container is None:
+            container_list = self.client.containers.list()
+            for c in container_list:
+                if container_name == self._get_swarm_if_selected(c):
+                    return c
+        self.logger.error(f"Container {container_name} not found.")
+                    
+
+    def tail_logs(self, monitored_object_name, monitor_type, lines=10):
+        """
+        Tail the last 'lines' of logs for a specific container.
+        Returns the last 'lines' of logs as a list of strings.
+        """
+        if monitor_type and (container_context := self._registry.get_by_monitored_object_name(monitor_type, monitored_object_name)):
+            if container := self.client.containers.get(container_context["container_id"]):
+                try:
+                    logs = container.logs(tail=lines).decode('utf-8')
+                    return logs
+                except docker.errors.NotFound:
+                    logging.error(f"Failed to read last {lines} lines of container logs. Container not found.")
+                    return None
+                except Exception as e:
+                    logging.error(f"Error while trying to tail logs for: {e}")
+                    return None
+            else:
+                self.logger.error(f"Container {monitored_object_name} not found. Cannot tail logs.")
+                return None
+        else:
+            self.logger.error(f"Container {monitored_object_name} not found in registry. Cannot tail logs.\nMonitor Type: {monitor_type}\nself._registry {self._registry.get_actively_monitored(type='all')}")
+            return None
+        
+    def container_action(self, monitored_object_name, action, monitor_type="container"):
+        """
+        Perform an action on a container (start, stop, restart).
+        """        
+        if not (container_context := self._registry.get_by_monitored_object_name(monitor_type, monitored_object_name)):
+            self.logger.error(f"Container {monitored_object_name} not found in registry. Cannot perform action: {action}")
+            return False
+        container = self.client.containers.get(container_context["container_id"])
+        if container:
+            try:
+                container_name = container.name
+                if action == "stop":
+                    self.logger.info(f"Stopping Container: {container_name}.")
+                    container = container
+                    container.stop()
+                    if container.wait(timeout=10):
+                        container.reload()
+                        self.logger.debug(f"Container {container_name} has been stopped: Status: {container.status}")
+                elif action == "restart":
+                    self.logger.info(f"Restarting Container: {container_name}.")
+                    container = container
+                    container.restart()
+                    container.reload()
+                    self.logger.info(f"Container {container_name} has been restarted. Status: {container.status}")
+
+            except Exception as e:
+                self.logger.error(f"Failed to {action} {monitored_object_name}: {e}")
+                return False
+        else:
+            self.logger.error(f"Container {monitored_object_name} not found. Could not perform action: {action}")
+            return False

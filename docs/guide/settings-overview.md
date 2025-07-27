@@ -1,6 +1,6 @@
 
 
-# Settings Overview & Priority
+# Settings Overview
 
 It's important to understand how settings can be applied on three different levels (this applies to both normal `settings` and `notifications` settings).
 

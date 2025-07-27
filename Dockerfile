@@ -1,19 +1,39 @@
 ARG PYTHON_VERSION=3.11.4
-FROM python:${PYTHON_VERSION}-slim AS base
+
+# --- Build Stage ---
+FROM python:${PYTHON_VERSION}-slim AS builder
 
 WORKDIR /app
 
+# Install build tools und systemd-dev libs
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    libsystemd-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
+
+RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
+
+# --- Final Stage ---
+FROM python:${PYTHON_VERSION}-slim AS final
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    systemd-journal-remote \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /install /usr/local
+
+COPY entrypoint.sh .
+COPY app/ .
+
 
 LABEL org.opencontainers.image.source="https://github.com/clemcer/loggifly"
 
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY entrypoint.sh .
-COPY app/load_config.py .
-COPY app/notifier.py .
-COPY app/app.py .
-COPY app/docker_monitor.py .
-COPY app/line_processor.py .
+RUN mkdir -p /tmp
+RUN mkdir -p /var/log/journal/remote
 
 ENTRYPOINT ["/bin/sh", "./entrypoint.sh"]

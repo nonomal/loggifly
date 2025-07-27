@@ -1,6 +1,5 @@
 from pydantic import (
     BaseModel,
-    Field,
     field_validator,
     model_validator,
     ConfigDict,
@@ -8,7 +7,7 @@ from pydantic import (
     ValidationError
 )
 from enum import Enum
-from typing import Dict, List, Optional, Union
+from typing import List, Optional, Union, ClassVar
 import os
 import logging
 import copy
@@ -44,8 +43,13 @@ def validate_priority(v):
     return v
 
 class BaseConfigModel(BaseModel):
-    model_config = ConfigDict(extra="ignore", validate_default=True, use_enum_values=True)
-
+    model_config = ConfigDict(
+        extra="ignore",
+        validate_default=True,
+        use_enum_values=True,
+        from_attributes=False,
+        arbitrary_types_allowed=False,
+    )
 
 class ExcludedKeywords(BaseConfigModel):
     keyword: Optional[str] = None
@@ -55,30 +59,30 @@ class Settings(BaseConfigModel):
     """
     Application-wide settings for logging, notifications, and feature toggles.
     """
-    log_level: str = Field("INFO", description="Logging level (DEBUG, INFO, WARNING, ERROR)")
-    multi_line_entries: bool = Field(True, description="Enable multi-line log detection")
-    disable_start_message: bool = Field(False, description="Disable startup notification")
-    disable_shutdown_message: bool = Field(False, description="Disable shutdown notification")
-    disable_config_reload_message: bool = Field(False, description="Disable config reload notification")
-    disable_container_event_message: bool = Field(False, description="Disable notification on container stops/starts")
-    reload_config: bool = Field(True, description="Disable config reaload on config change")
+    log_level: str = "INFO"
+    multi_line_entries: bool = True
+    disable_start_message: bool = False
+    disable_shutdown_message: bool = False
+    disable_config_reload_message: bool = False
+    disable_container_event_message: bool = False
+    reload_config: bool = True
     
     # modular settings:
-    attach_logfile: bool = Field(False, description="Attach logfile to notification")
-    notification_cooldown: int = Field(5, description="Cooldown in seconds for repeated alerts")
-    notification_title: str = Field("default", description="Set a template for the notification title")
-    action_cooldown: Optional[int] = Field(300)
-    attachment_lines: int = Field(20, description="Number of log lines to include in attachments")
-    hide_regex_in_title: Optional[bool] = Field(False, description="Hide the regex in the notification title")
-    excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = Field(default=None, description="List of keywords to exclude from notifications")
-
+    attach_logfile: bool = False
+    notification_cooldown: int = 5
+    notification_title: str = "default"
+    action_cooldown: Optional[int] = 300
+    attachment_lines: int = 20
+    hide_regex_in_title: Optional[bool] = False
+    excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = None
+    
 class ModularSettings(BaseConfigModel):
     """
     Optional settings that can be overridden per keyword or container.
     """
     ntfy_tags: Optional[str] = None
     ntfy_topic: Optional[str] = None
-    ntfy_priority: Optional[int] = None
+    ntfy_priority: Optional[Union[str, int]] = None
     ntfy_url: Optional[str] = None
     ntfy_token: Optional[SecretStr] = None
     ntfy_username: Optional[str] = None
@@ -92,8 +96,12 @@ class ModularSettings(BaseConfigModel):
     notification_title: Optional[str] = None
     action_cooldown: Optional[int] = None
     attach_logfile: Optional[bool] = None
-    excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = Field(default=None, description="List of keywords to exclude from notifications")
+    excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = None
     hide_regex_in_title: Optional[bool] = None
+
+    @field_validator("ntfy_priority", mode="before")
+    def validate_priority(cls, v):
+        return validate_priority(v)
 
 class ActionEnum(str, Enum):
     RESTART = "restart"
@@ -122,68 +130,92 @@ class KeywordBase(BaseModel):
     """
     Base model for keyword lists, with pre-validation to handle legacy and misconfigured entries.
     """
+    _DISALLOW_ACTION: ClassVar[bool] = False
+
     keywords: List[Union[str, KeywordItem, RegexItem]] = []
 
     @model_validator(mode="before")
-    def int_to_string(cls, values):
+    def int_to_string(cls, data: dict) -> dict:
         """
         Convert integer keywords to strings and filter out misconfigured entries before validation.
         """
-        for field in ["keywords", "keywords_with_attachment"]:
-            if field in values and isinstance(values[field], list):
-                converted = []
-                for kw in values[field]:
-                    if isinstance(kw, dict):
-                        keys = list(kw.keys())
-                        if not any(key in keys for key in ["keyword", "regex"]):
-                            logging.warning(f"Ignoring Error in config in field '{field}': '{kw}'. You have to set 'keyword' or 'regex' as a key.")
-                            continue
-                        for key in keys:
-                            if isinstance(kw[key], int):
-                                kw[key] = str(kw[key])
-                        converted.append(kw)
-                    else:
-                        try:
-                            converted.append(str(kw))
-                        except ValueError:
-                            logging.warning(f"Ignoring unexpected Error in config in field '{field}': '{kw}'.")
-                            continue
-                values[field] = converted
-        return values
+        if "keywords" in data and isinstance(data["keywords"], list):
+            converted = []
+            for item in data["keywords"]:
+                if isinstance(item, dict):
+                    keys = list(item.keys())
+                    if "keyword" not in item and "regex" not in item:
+                        logging.warning(f"Ignoring Error in config in field 'keywords': '{item}'. You have to set 'keyword' or 'regex' as a key.")
+                        continue
+                    for key in keys:
+                        if isinstance(item[key], int):
+                            item[key] = str(item[key])
+                    if cls._DISALLOW_ACTION and "action" in item:
+                        if item["action"] is not None:
+                            ident = item.get("keyword") or item.get("regex") or "unknown"
+                            logging.warning(f"Action not allowed in this context. Removing for: {ident}")
+                        item["action"] = None  
+                    converted.append(item)
+                else:
+                    try:
+                        converted.append(str(item))
+                    except ValueError:
+                        logging.warning(f"Ignoring unexpected Error in config in field 'keywords': '{item}'.")
+                        continue
+            data["keywords"] = converted
+        return data
     
 class ContainerConfig(KeywordBase, ModularSettings):    
     """
     Model for per-container configuration, including keywords and setting overrides.
     """
-    hosts: Optional[str] = Field(default=None, description="The host in which the container should be monitored") 
+    hosts: Optional[str] = None
 
-    _validate_priority = field_validator("ntfy_priority", mode="before")(validate_priority)
+    @field_validator("ntfy_priority", mode="before")
+    def validate_priority(cls, v):
+        return validate_priority(v)
+    
+class SwarmServiceConfig(ContainerConfig):
+    """
+    Model for per-swarm service configuration, inheriting from ContainerConfig.
+    """
+    _DISALLOW_ACTION: ClassVar[bool] = True
+
+
+class SystemdServiceConfig(ContainerConfig):
+    """
+    Model for per-systemd service configuration, inheriting from ContainerConfig.
+    """
+    _DISALLOW_ACTION: ClassVar[bool] = True
+
+    hosts: Optional[str] = None
 
 class GlobalKeywords(BaseConfigModel, KeywordBase):
     pass
 
 class NtfyConfig(BaseConfigModel):
-    url: str = Field(..., description="Ntfy server URL")
-    topic: str = Field(..., description="Ntfy topic name")
-    token: Optional[SecretStr] = Field(default=None, description="Optional access token")
-    username: Optional[str] = Field(default=None, description="Optional username")
-    password: Optional[SecretStr] = Field(default=None, description="Optional password")
-    priority: Optional[Union[str, int]] = Field(default=3, description="Message priority 1-5")
-    tags: Optional[str] = Field("kite,mag", description="Comma-separated tags")
+    url: str 
+    topic: str 
+    token: Optional[SecretStr] = None
+    username: Optional[str] = None
+    password: Optional[SecretStr] = None
+    priority: Optional[Union[str, int]] = 3
+    tags: Optional[str] = "kite,mag"
 
-    _validate_priority = field_validator("priority", mode="before")(validate_priority)
-
+    @field_validator("priority", mode="before")
+    def validate_priority(cls, v):
+        return validate_priority(v)
 class AppriseConfig(BaseConfigModel):  
-    url: SecretStr = Field(..., description="Apprise compatible URL")
+    url: SecretStr 
 
 class WebhookConfig(BaseConfigModel):
     url: str
-    headers: Optional[dict] = Field(default=None)
+    headers: Optional[dict]
 
 class NotificationsConfig(BaseConfigModel):
-    ntfy: Optional[NtfyConfig] = Field(default=None, validate_default=False)
-    apprise: Optional[AppriseConfig] = Field(default=None, validate_default=False)
-    webhook: Optional[WebhookConfig] = Field(default=None, validate_default=False)
+    ntfy: Optional[NtfyConfig] = None
+    apprise: Optional[AppriseConfig] = None
+    webhook: Optional[WebhookConfig] = None
 
     @model_validator(mode="after")
     def check_at_least_one(self) -> "NotificationsConfig":
@@ -193,8 +225,9 @@ class NotificationsConfig(BaseConfigModel):
 
 class GlobalConfig(BaseConfigModel):
     """Root configuration model for the application"""
-    containers: Optional[Dict[str, ContainerConfig]] = Field(default=None)
-    swarm_services: Optional[Dict[str, ContainerConfig]] = Field(default=None)
+    containers: dict[str, ContainerConfig] | None = None
+    swarm_services: dict[str, SwarmServiceConfig] | None = None
+    systemd_services: dict[str, SystemdServiceConfig] | None = None
     global_keywords: GlobalKeywords
     notifications: NotificationsConfig
     settings: Settings
@@ -203,7 +236,7 @@ class GlobalConfig(BaseConfigModel):
     def transform_legacy_format(cls, values):
         """Migrate legacy list-based container definitions to dictionary format."""
         # Convert list containers to dict format
-        for container_object in ["containers", "swarm_services"]:
+        for container_object in ["containers", "swarm_services", "systemd_services"]:
             if isinstance(values.get(container_object), list):
                 values[container_object] = {name: {} for name in values[container_object]}
             for container in values.get(container_object, {}):
@@ -220,17 +253,17 @@ class GlobalConfig(BaseConfigModel):
     @model_validator(mode="after")
     def check_at_least_one(self) -> "GlobalConfig":
         # Ensure at least one container or swarm service and at least one keyword is configured
-        if not self.containers and not self.swarm_services:
+        if not self.containers and not self.swarm_services and not self.systemd_services:
             raise ValueError("You have to configure at least one container")
-        tmp_list = self.global_keywords.keywords.copy()
-        if not tmp_list:
-            if self.containers:
-                for c in self.containers:
-                    tmp_list.extend(self.containers[c].keywords)
-            if self.swarm_services:
-                for c in self.swarm_services:
-                    tmp_list.extend(self.swarm_services[c].keywords)
-        if not tmp_list:
+        all_keywords = self.global_keywords.keywords.copy()
+        if not all_keywords:
+            for config in [self.containers, self.swarm_services, self.systemd_services]:
+                if config:
+                    for c in config.values():
+                        all_keywords.extend(c.keywords)
+                if all_keywords:
+                    break
+        if not all_keywords:
             raise ValueError("No keywords configured. You have to set keywords either per container or globally.")
         return self
     
@@ -415,6 +448,13 @@ def load_config(official_path="/config/config.yaml"):
             s = s.strip()
             env_config["swarm_services"][s] = {}
 
+    if os.getenv("SYSTEMD_SERVICES"):
+        env_config["systemd_services"] = {}
+        for c in os.getenv("SYSTEMD_SERVICES", "").split(","):
+            c = c.strip()
+            env_config["systemd_services"][c] = {}
+
+
     if any(ntfy_values.values()):
         env_config["notifications"]["ntfy"] = ntfy_values
         yaml_config["notifications"]["ntfy"] = {} if yaml_config["notifications"].get("ntfy") is None else yaml_config["notifications"]["ntfy"]
@@ -440,7 +480,12 @@ def load_config(official_path="/config/config.yaml"):
     # Validate the merged configuration with Pydantic
     config = GlobalConfig.model_validate(merged_config)
 
-    config_dict = prettify_config(config.model_dump(exclude_none=True, exclude_defaults=False, exclude_unset=False))
+    config_dict = prettify_config(config.model_dump(
+                                exclude_none=True, 
+                                exclude_defaults=False, 
+                                exclude_unset=False,
+                                )
+                            )
     yaml_output = yaml.dump(config_dict, default_flow_style=False, sort_keys=False, indent=4)
     logging.info(f"\n ------------- CONFIG ------------- \n{yaml_output}\n ----------------------------------")
 

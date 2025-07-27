@@ -190,12 +190,20 @@ def send_webhook(json_data, webhook_config):
         logging.error(f"Error trying to send webhook to url: {url}, headers: {headers}: %s", e)
 
 
-def send_notification(config: GlobalConfig, container_name, title=None, message=None, message_config=None, container_config=None, hostname=None):
+def send_notification(config: GlobalConfig, 
+                      monitored_object_name, 
+                      title=None, 
+                      message=None,
+                      message_config=None, 
+                      container_config=None, 
+                      hostname=None):
     """
     Dispatch a notification using ntfy, Apprise, and/or webhook based on configuration.
     Handles message formatting, file attachments, and host labeling.
     """
     message = message.replace(r"\n", "\n").strip() if message else ""
+    monitor_type = message_config.get("monitor_type", "container") if message_config else "container"
+
     # If multiple hosts are set, prepend hostname to title
     title = f"[{hostname}] - {title}" if hostname else title
     file_path = message_config.get("file_path") if message_config else None
@@ -212,7 +220,7 @@ def send_notification(config: GlobalConfig, container_name, title=None, message=
     if (webhook_config and webhook_config.get("url")):
         keywords = message_config.get("keywords_found", None) if message_config else None
         json_data = {
-            "container": container_name,
+            monitor_type: monitored_object_name,
             "keywords": keywords,
             "title": title,
             "message": message,
