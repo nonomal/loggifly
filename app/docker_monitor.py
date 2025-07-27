@@ -12,6 +12,8 @@ import docker.errors
 from datetime import datetime
 from notifier import send_notification
 from line_processor import LogProcessor
+from utils.helpers import parse_labels
+from load_config import ContainerConfig
 
 
 class MonitoredContainerRegistry:
@@ -118,6 +120,49 @@ class DockerLogMonitor:
         if container.name in self.selected_containers:
             return "container", container.name, container.name
         
+        labels = container.labels
+        if labels.get("loggifly.monitor", "false").lower() == "true":
+            label_config = parse_labels(labels)
+            # self.logger.debug
+            if service_name := labels.get("com.docker.swarm.service.name", ""):
+                self.logger.info(f"Found swarm service {service_name} with labels: {label_config}")
+                self.config.swarm_services[service_name] = ContainerConfig.model_validate(label_config)
+                return "swarm", service_name, service_name
+            else:
+                self.logger.info(f"Found container {container.name} with labels: {label_config}")
+                self.config.containers[container.name] = ContainerConfig.model_validate(label_config)
+                return "container", container.name, container.name
+        return None
+    
+    def _get_swarm_if_selected(self, container, return_configured_name=False):
+        def get_name_with_replica(service_name, task_id, task_name):
+            if not any([service_name, task_id, task_name]):
+                return None
+            # Erstelle Regex: service_name.<replica>.<task_id>
+            pattern = re.escape(service_name) + r"\.(\d+)\." + re.escape(task_id) + r"$"
+            regex = re.compile(pattern)
+            match = regex.search(task_name)
+            if match:
+                return f"{service_name}.{match.group(1)}"
+            else:
+                return None
+                
+        # Return the configured swarm service name if the container belongs to a monitored swarm service
+        if container is None:
+            return None
+        labels = container.labels
+        service_name = labels.get("com.docker.swarm.service.name", "")
+        stack_name = labels.get("com.docker.stack.namespace", "")
+        task_id = labels.get("com.docker.swarm.task.id")
+        task_name = labels.get("com.docker.swarm.task.name")
+
+        if service_name or stack_name:
+            for configured in self.selected_swarm_services:
+                if configured == service_name or configured == stack_name:
+                    if return_configured_name:
+                        return configured
+                    else:
+                        return get_name_with_replica(service_name, task_id, task_name) or service_name or stack_name or container.name
         return None
 
     def _maybe_monitor_container(self, container, monitor_context=None):
@@ -219,37 +264,6 @@ class DockerLogMonitor:
                         self.logger.debug(f"Swarm service {swarm} is configured for host(s) '{', '.join(hostnames)}' but this instance is running on host '{self.hostname}'. Skipping this swarm service.")
                         continue
                 self.selected_swarm_services.append(swarm)
-
-    def _get_swarm_if_selected(self, container, return_configured_name=False):
-        def get_name_with_replica(service_name, task_id, task_name):
-            if not any([service_name, task_id, task_name]):
-                return None
-            # Erstelle Regex: service_name.<replica>.<task_id>
-            pattern = re.escape(service_name) + r"\.(\d+)\." + re.escape(task_id) + r"$"
-            regex = re.compile(pattern)
-            match = regex.search(task_name)
-            if match:
-                return f"{service_name}.{match.group(1)}"
-            else:
-                return None
-                
-        # Return the configured swarm service name if the container belongs to a monitored swarm service
-        if container is None:
-            return None
-        labels = container.labels
-        service_name = labels.get("com.docker.swarm.service.name", "")
-        stack_name = labels.get("com.docker.stack.namespace", "")
-        task_id = labels.get("com.docker.swarm.task.id")
-        task_name = labels.get("com.docker.swarm.task.name")
-
-        if service_name or stack_name:
-            for configured in self.selected_swarm_services:
-                if configured == service_name or configured == stack_name:
-                    if return_configured_name:
-                        return configured
-                    else:
-                        return get_name_with_replica(service_name, task_id, task_name) or service_name or stack_name or container.name
-        return None
 
     # This function is called from outside this class to start the monitoring
     def start(self, client):
