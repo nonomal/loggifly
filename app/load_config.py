@@ -12,7 +12,6 @@ import os
 import logging
 import copy
 import yaml
-from utils.helpers import parse_labels  
 
 logging.getLogger(__name__)
 
@@ -176,20 +175,21 @@ class ContainerConfig(KeywordBase, ModularSettings):
     def validate_priority(cls, v):
         return validate_priority(v)
     
-class SwarmServiceConfig(ContainerConfig):
+class SwarmServiceConfig(KeywordBase, ModularSettings):
     """
     Model for per-swarm service configuration, inheriting from ContainerConfig.
     """
     _DISALLOW_ACTION: ClassVar[bool] = True
+    hosts: Optional[str] = None
 
-
-class SystemdServiceConfig(ContainerConfig):
+class SystemdServiceConfig(KeywordBase, ModularSettings):
     """
     Model for per-systemd service configuration, inheriting from ContainerConfig.
     """
     _DISALLOW_ACTION: ClassVar[bool] = True
 
     hosts: Optional[str] = None
+    custom_filters: Optional[List[str]] = None
 
 class GlobalKeywords(BaseConfigModel, KeywordBase):
     pass
@@ -271,18 +271,19 @@ class GlobalConfig(BaseConfigModel):
 def add_to_config(config, monitor_type, name, config_dict):
     try:
         new_config = None
-        if monitor_type == "swarm":
+        if monitor_type == "swarm" and name not in config.swarm_services:
             new_config = SwarmServiceConfig.model_validate(config_dict)
             config.swarm_services[name] = new_config
-        elif monitor_type == "container":
+        elif monitor_type == "container" and name not in config.containers:
             new_config = ContainerConfig.model_validate(config_dict)
             config.containers[name] = new_config
         if new_config:
-            return prettify_config(new_config.model_dump(
+            pretty_config = prettify_config(new_config.model_dump(
                 exclude_none=True, 
                 exclude_defaults=False, 
                 exclude_unset=False,
             ))
+            return pretty_config
         return None
     except ValidationError as e:
         logging.error(f"Error adding to config: {e}")

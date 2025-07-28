@@ -19,6 +19,7 @@ class SystemdMonitor():
     def __init__(self, config: GlobalConfig):
         self.config = config
         self.logger = logging.getLogger(__name__)
+        self.processor_instances = {}
         self.shutdown_event = threading.Event()       
         self.reader_stopped_event = threading.Event()
         self.reader_stop_event = threading.Event()
@@ -131,20 +132,35 @@ class SystemdMonitor():
                                 )   
         self.processor_instances[unit] = {"processor": processor}
 
+    def configure_units_and_filters(self):
+        if not self.config.systemd_services:
+            self.logger.warning("No systemd services configured for monitoring. Please check your config.yaml.")
+            return
+        for i, unit in enumerate(self.config.systemd_services):
+            if unit not in self.processor_instances:
+                self._add_procesor(unit)
+            if (custom_filters := self.config.systemd_services[unit].custom_filters) and isinstance(custom_filters, list):
+                for filter in custom_filters:
+                    if isinstance(filter, str):
+                        self.reader.add_match(filter)
+                    else:
+                        self.logger.error(f"Invalid filter type: {type(filter)} for unit {unit}. Please check your config.yaml.")
+            else:
+                self.reader.add_match(_SYSTEMD_UNIT=unit)
+            if i < len(self.config.systemd_services) - 1:
+                self.reader.add_disjunction()
+
     def start(self):
         self._start_journal_remote_service()
         self.reader = journal.Reader(path="/var/log/journal/remote/")
         self.reader.data_threshold = 64 * 1024 * 1024
-        self.reader.seek_tail()  # Start at the end of the journal
+        # self.reader.seek_tail()  # Start at the end of the journal
+        self.reader.seek_realtime(datetime.now())
         self.monitored_units = [u for u in self.config.systemd_services] if self.config.systemd_services else []
-        self.processor_instances = {}
         if not self.config.systemd_services:
             logging.warning("No systemd services configured for monitoring. Please check your config.yaml.")
             # return
-        
-        for unit in self.monitored_units:
-            self.reader.add_match(_SYSTEMD_UNIT=unit)
-            self._add_procesor(unit)
+        self.configure_units_and_filters()
 
         self._monitor_systemd_journal()
         if os.environ.get("CLEANUP_JOURNAL_LOGS", "true").strip().lower() == "true":
@@ -152,7 +168,7 @@ class SystemdMonitor():
 
         return self._start_message()
     
-    def _start_message(self, config_reload=False):
+    def _start_message(self):
         # Compose and log/send a summary message about monitored services
         monitored_units_message = "\n - ".join(s for s in self.monitored_units)
         message = (
@@ -171,14 +187,12 @@ class SystemdMonitor():
 
             # Monitor new services and stop monitoring those not in the new config
             self.reader.flush_matches()  # Clear existing matches
-            for unit in selected_units:
-                self.reader.add_match(_SYSTEMD_UNIT=unit)
-                self._add_procesor(unit)
+            self.configure_units_and_filters()
         except Exception as e:
             self.logger.error(f"Error during systemd monitor configuration reload: {e}")
             return ""
         self.monitored_units = selected_units
-        return self._start_message(config_reload=True)
+        return self._start_message()
         
     
 
