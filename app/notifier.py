@@ -106,17 +106,20 @@ def send_apprise_notification(url, message, title, file_path=None):
         apobj = apprise.Apprise()
         apobj.add(url)
         if file_path is None:
-            apobj.notify(
+            result = apobj.notify(
                 title=title,
                 body=message,
             )
         else:
-            apobj.notify(
+            result = apobj.notify(
                 title=title,
                 body=message,
                 attach=file_path
             )
-        logging.info("Apprise-Notification sent successfully")
+        if result:
+            logging.info("Apprise-Notification sent successfully")
+        else:
+            logging.error("Error while trying to send apprise-notification: %s", result)
     except Exception as e:
         logging.error("Error while trying to send apprise-notification: %s", e)
 
