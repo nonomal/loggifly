@@ -12,6 +12,7 @@ import os
 import logging
 import copy
 import yaml
+from utils.helpers import parse_labels  
 
 logging.getLogger(__name__)
 
@@ -267,6 +268,28 @@ class GlobalConfig(BaseConfigModel):
             raise ValueError("No keywords configured. You have to set keywords either per container or globally.")
         return self
     
+def add_to_config(config, monitor_type, name, config_dict):
+    try:
+        new_config = None
+        if monitor_type == "swarm":
+            new_config = SwarmServiceConfig.model_validate(config_dict)
+            config.swarm_services[name] = new_config
+        elif monitor_type == "container":
+            new_config = ContainerConfig.model_validate(config_dict)
+            config.containers[name] = new_config
+        if new_config:
+            return prettify_config(new_config.model_dump(
+                exclude_none=True, 
+                exclude_defaults=False, 
+                exclude_unset=False,
+            ))
+        return None
+    except ValidationError as e:
+        logging.error(f"Error adding to config: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error adding to config: {e}")
+    return None
+
 
 def format_pydantic_error(e: ValidationError) -> str:
     """Format Pydantic validation errors for user-friendly display."""
@@ -343,7 +366,6 @@ def convert_legacy_formats(config):
                             elif isinstance(keyword, str):
                                 container_config["keywords"].append({"keyword": keyword, "action": action})
     return config_copy
-
 
 def merge_yaml_and_env(yaml, env_update):
     """
