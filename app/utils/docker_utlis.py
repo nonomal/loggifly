@@ -1,4 +1,5 @@
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -38,3 +39,22 @@ def parse_labels(labels: dict) -> dict:
         config["keywords"].extend(keywords_to_append)
     logger.debug(f"Parsed config: {config}")
     return config
+
+
+def get_service_name(labels):
+    """
+    Tries to extract the service name with their replica id from container labels so that we have a unique name for each replica.
+    """
+    task_id = labels.get("com.docker.swarm.task.id")
+    task_name = labels.get("com.docker.swarm.task.name")
+    service_name = labels.get("com.docker.swarm.service.name", "")
+    if not any([service_name, task_id, task_name]):
+        return None
+    # Regex: service_name.<replica>.<task_id>
+    pattern = re.escape(service_name) + r"\.(\d+)\." + re.escape(task_id) + r"$"
+    regex = re.compile(pattern)
+    match = regex.search(task_name)
+    if match:
+        return f"{service_name}.{match.group(1)}"
+    else:
+        return service_name

@@ -12,8 +12,8 @@ import docker.errors
 from datetime import datetime
 from notifier import send_notification
 from line_processor import LogProcessor
-from utils.helpers import parse_labels
 from load_config import add_to_config
+from utils.docker_utlis import parse_labels, get_service_name
 
 
 class MonitoredContainerContext:
@@ -68,29 +68,7 @@ class MonitoredContainerContext:
     def clear_monitoring_stopped(self):
         """Clear the monitoring stopped signal."""
         self.monitoring_stopped_event.clear()
-
-
-# class ContainerConfigurationHandler:
-#     """
-#     Handles the logic for determining if and how a container should be monitored.
-#     This centralizes the configuration logic that was previously spread across methods.
-#     """
-#     def __init__(self, logger, config, swarm_mode, selected_containers, selected_swarm_services):
-#         self.logger = logger
-#         self.config = config
-#         self.swarm_mode = swarm_mode
-#         self.selected_containers = selected_containers
-#         self.selected_swarm_services = selected_swarm_services
-
-    
-#     def get_monitor_context(self, container):
-#         """
-#         Determine if a container should be monitored and how.
-#         Returns a tuple of (monitor_type, configured_name, monitored_object_name) if the container
-#         should be monitored, None otherwise.
-#         """
-
-
+        
 class MonitoredContainerRegistry:
     def __init__(self):
         self._by_id = {}
@@ -185,23 +163,6 @@ class DockerLogMonitor:
         with self.threads_lock:
             self.threads.append(thread)
         
-    def get_service_name(self, labels):
-        """
-        Tries to extract the service name with their replica id from container labels so that we have a unique name for each replica.
-        """
-        task_id = labels.get("com.docker.swarm.task.id")
-        task_name = labels.get("com.docker.swarm.task.name")
-        service_name = labels.get("com.docker.swarm.service.name", "")
-        if not any([service_name, task_id, task_name]):
-            return None
-        # Regex: service_name.<replica>.<task_id>
-        pattern = re.escape(service_name) + r"\.(\d+)\." + re.escape(task_id) + r"$"
-        regex = re.compile(pattern)
-        match = regex.search(task_name)
-        if match:
-            return f"{service_name}.{match.group(1)}"
-        else:
-            return service_name
 
     def _get_swarm_if_selected(self, container, return_configured_name=False):               
         # Return the configured swarm service name if the container belongs to a monitored swarm service
@@ -216,7 +177,7 @@ class DockerLogMonitor:
                     if return_configured_name:
                         return configured
                     else:
-                        return self.get_service_name(labels) or stack_name or container.name
+                        return get_service_name(labels) or stack_name or container.name
         return None
 
     def get_monitor_context_if_selected(self, container):
@@ -231,7 +192,7 @@ class DockerLogMonitor:
         if labels.get("loggifly.monitor", "false").lower() == "true":
             label_config = parse_labels(labels)
             try:
-                if service_name := self.get_service_name(labels):
+                if service_name := get_service_name(labels):
                     self.logger.info(f"Found swarm service {service_name} with labels: {label_config}")
                     monitor_type, configured_name, monitored_object_name = "swarm", service_name, service_name
                 else:
@@ -240,8 +201,7 @@ class DockerLogMonitor:
 
                 new_config = add_to_config(self.config, monitor_type, configured_name, label_config)
                 if new_config:
-                    self.logger.debug(f"Added {monitor_type} config based on labels:\n{new_config}")
-                    return monitor_type, container.name, container.name, new_config
+                    return monitor_type, container.name, container.name
                 else:
                     self.logger.error(f"Error adding label config for container {container.name}")
             except Exception as e:
@@ -257,18 +217,7 @@ class DockerLogMonitor:
         monitor_context = monitor_context or self.get_monitor_context_if_selected(container)
         if not monitor_context:
             return False
-
-        # Unpack the monitor context
-        if len(monitor_context) == 4:  # Context includes a new configuration from labels
-            monitor_type, configured_name, monitored_object_name, new_config = monitor_context
-            # Update the main configuration with the new configuration from labels
-            if monitor_type == "swarm":
-                self.config.swarm_services[configured_name] = new_config
-            else:
-                self.config.containers[configured_name] = new_config
-        else:
-            monitor_type, configured_name, monitored_object_name = monitor_context
-
+        monitor_type, configured_name, monitored_object_name = monitor_context
         self.logger.info(f"New Container to monitor: {container.name}")
 
         # Check if we're already monitoring this container
@@ -449,12 +398,12 @@ class DockerLogMonitor:
                     else:
                         self.logger.debug(f"Container {c.name} is already monitored. Skipping.")
 
-            return self._start_message(config_reload=True)
+            return self._start_message()
         except Exception as e:
             self.logger.error(f"Error handling config changes: {e}")
         return ""
 
-    def _start_message(self, config_reload=False):
+    def _start_message(self):
         # Compose and log/send a summary message about monitored containers and services
         self.logger.debug(f"Selected Containers: {self.selected_containers}")
         monitored_container_names = [c.monitored_object_name for c in self._registry.get_actively_monitored(type="container")]

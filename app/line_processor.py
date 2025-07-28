@@ -139,8 +139,7 @@ class LogProcessor:
             "hide_regex_in_title": self.container_config.hide_regex_in_title if self.container_config.hide_regex_in_title is not None else self.config.settings.hide_regex_in_title,
         }
 
-        self.multi_line_config = False if self.monitor_type == "systemd" else self.config.settings.multi_line_entries
-        self.logger.debug(f"{self.monitored_object_name}: Multi-Line Mode: {self.multi_line_config}")
+        self.multi_line_mode = False if self.monitor_type == "systemd" else self.config.settings.multi_line_entries
         self.action_cooldown= self.container_config.action_cooldown or self.config.settings.action_cooldown or 300
         self.time_per_keyword = {}
         self.last_action_time = None
@@ -148,7 +147,7 @@ class LogProcessor:
             keyword = keyword_dict.get("keyword") or keyword_dict.get("regex")
             self.time_per_keyword[keyword] = 0
 
-        if self.multi_line_config is True and not self.monitor_type == "systemd":
+        if self.multi_line_mode is True and not self.monitor_type == "systemd":
             self.line_count = 0
             self.line_limit = 300
             if self.valid_pattern is False:
@@ -185,7 +184,7 @@ class LogProcessor:
         If multi-line mode is off or no pattern is detected, processes as single line; otherwise, processes as part of a multi-line entry.
         """
         clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line)
-        if self.multi_line_config is False:
+        if self.multi_line_mode is False:
             self._search_and_send(clean_line)
         else:
             if self.line_count < self.line_limit:
@@ -242,7 +241,7 @@ class LogProcessor:
                     time.sleep(4)
                     if self.container_stop_event.is_set():
                         break
-                if self.multi_line_config is False:
+                if self.multi_line_mode is False:
                     break
                 with self.lock_buffer:
                     if (time.time() - self.log_stream_last_updated > self.log_stream_timeout) and self.buffer:
