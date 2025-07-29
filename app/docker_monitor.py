@@ -12,8 +12,8 @@ import docker.errors
 from datetime import datetime
 from notifier import send_notification
 from line_processor import LogProcessor
-from load_config import add_to_config
-from utils.docker_utlis import parse_labels, get_service_name
+from config.load_config import add_to_config
+from utils.utils import generate_message
 
 
 class MonitoredContainerContext:
@@ -23,8 +23,8 @@ class MonitoredContainerContext:
     """
     def __init__(self, monitor_type, config_key, monitored_object_name, docker_name, container_id):
         self.monitor_type = monitor_type  # "container" or "swarm"
-        self.config_key = config_key  # The key used in the configuration
-        self.monitored_object_name = monitored_object_name  # Unique name for container (also if it is a swarm service container replica)
+        self.config_key = config_key  # The key used in the configuration (for swawrm it can be stack or service name)
+        self.monitored_object_name = monitored_object_name  # Unique name for container/service (also if it is a swarm service container replica)
         self.docker_name = docker_name  # Actual Docker container name
         self.container_id = container_id  # Docker container ID
         self.generation = 0  # Used to track container restarts
@@ -90,7 +90,7 @@ class MonitoredContainerRegistry:
     def get_by_monitored_object_name(self, monitor_type, monitored_object_name):
         return self._by_monitored_object_name.get((monitor_type, monitored_object_name))
             
-    def get_actively_monitored(self, type="all"):
+    def get_actively_monitored(self, monitor_type="all"):
         """
         Returns a list of actively monitored containers.
         """
@@ -102,9 +102,9 @@ class MonitoredContainerRegistry:
                 container for container in self._by_id.values()
                 if not container.is_monitoring_stopped() and container.monitor_type == "container"
             ]
-        if type == "swarm":
+        if monitor_type == "swarm":
             return swarm_services
-        elif type == "container":   
+        elif monitor_type == "container":   
             return containers
         else:
             return swarm_services + containers
@@ -307,15 +307,6 @@ class DockerLogMonitor:
                         continue
                 self.selected_swarm_services.append(swarm)
         
-        # Initialize the configuration handler with the selected containers and services
-        # self.config_handler = ContainerConfigurationHandler(
-        #     self.logger,
-        #     self.config,
-        #     self.swarm_mode,
-        #     self.selected_containers,
-        #     self.selected_swarm_services
-        # )
-
     # This function is called from outside this class to start the monitoring
     def start(self, client):
         """
@@ -367,8 +358,8 @@ class DockerLogMonitor:
             return
         try:
             # stop monitoring containers that are no longer in the config
-            actively_monitored_swarm = self._registry.get_actively_monitored(type="swarm")
-            actively_monitored_containers = self._registry.get_actively_monitored(type="container") 
+            actively_monitored_swarm = self._registry.get_actively_monitored(monitor_type="swarm")
+            actively_monitored_containers = self._registry.get_actively_monitored(monitor_type="container") 
             stop_monitoring = (
                 [c for c in actively_monitored_swarm if c.config_key not in self.selected_swarm_services]
                 + 
@@ -403,35 +394,18 @@ class DockerLogMonitor:
             self.logger.error(f"Error handling config changes: {e}")
         return ""
 
+
     def _start_message(self):
         # Compose and log/send a summary message about monitored containers and services
-        self.logger.debug(f"Selected Containers: {self.selected_containers}")
-        monitored_container_names = [c.monitored_object_name for c in self._registry.get_actively_monitored(type="container")]
-        self.logger.debug(f"Monitored Container Names: {monitored_container_names}")
-        monitored_containers_message = "\n - ".join(monitored_container_names)
+        # monitored_container_names, unmonitored_containers, monitored_swarm_service_instances, unmonitored_swarm_services
+        monitored_container_names = [c.monitored_object_name for c in self._registry.get_actively_monitored(monitor_type="container")]
         unmonitored_containers = [c for c in self.selected_containers if c not in monitored_container_names]
-        self.logger.debug(f"Unmonitored Containers: {unmonitored_containers}")
-        message = (
-            f"These containers are being monitored:\n - {monitored_containers_message}" if monitored_container_names
-            else f"No selected containers are running. Waiting for new containers..."
-        )
-        message = message + ((f"\n\nThese selected containers are not running:\n - " + '\n - '.join(unmonitored_containers)) if unmonitored_containers else "")
+        message = generate_message(monitored_container_names, unmonitored_containers, "Containers", host=self.hostname)
         if self.swarm_mode:
-            actively_monitored_swarm = [context for context in self._registry.get_actively_monitored(type="swarm")]
-            unmonitored_swarm_services = [
-                s for s in self.selected_swarm_services if s not in [s.config_key for s in actively_monitored_swarm]
-                ]
+            actively_monitored_swarm = [context for context in self._registry.get_actively_monitored(monitor_type="swarm")]
+            unmonitored_swarm_services = [s for s in self.selected_swarm_services if s not in [s.config_key for s in actively_monitored_swarm]]
             monitored_swarm_service_instances = [s.monitored_object_name for s in actively_monitored_swarm]
-            monitored_services_message = "\n - ".join(monitored_swarm_service_instances) if actively_monitored_swarm else ""
-            self.logger.debug(f"Monitored Swarm Services: {actively_monitored_swarm}. Unmonitored Swarm Services: {unmonitored_swarm_services}")
-            message = (message
-                        + (f"\nThese Swarm Services are being monitored:\n - {monitored_services_message}"
-                            if actively_monitored_swarm
-                            else "")
-                        + f"\n\nThese selected Swarm Services are not running:\n - "+ "\n - ".join(unmonitored_swarm_services)
-                        )
-        if self.hostname:
-            message = f"[{self.hostname}]\n" + message
+            message = generate_message(monitored_swarm_service_instances, unmonitored_swarm_services, "Swarm Services", host=self.hostname)
         return message
 
     def _handle_error(self, error_count, last_error_time, container_name=None):
@@ -615,7 +589,7 @@ class DockerLogMonitor:
         self.logger.info(f"Starting cleanup " f"for host {self.hostname}..." if self.hostname else "...")
         self.cleanup_event.set()
         self.shutdown_event.set()
-        for context in self._registry.get_actively_monitored(type="all"):
+        for context in self._registry.get_actively_monitored(monitor_type="all"):
             if context.log_stream is not None:
                 self._close_stream_connection(context.container_id)
         if self.event_stream:
@@ -664,7 +638,7 @@ class DockerLogMonitor:
                 self.logger.error(f"Container {monitored_object_name} not found. Cannot tail logs.")
                 return None
         else:
-            self.logger.error(f"Container {monitored_object_name} not found in registry. Cannot tail logs.\nMonitor Type: {monitor_type}\nself._registry {self._registry.get_actively_monitored(type='all')}")
+            self.logger.error(f"Container {monitored_object_name} not found in registry. Cannot tail logs.\nMonitor Type: {monitor_type}\nself._registry {self._registry.get_actively_monitored(monitor_type='all')}")
             return None
         
     def container_action(self, monitored_object_name, action, monitor_type="container"):
@@ -698,3 +672,60 @@ class DockerLogMonitor:
         else:
             self.logger.error(f"Container {monitored_object_name} not found. Could not perform action: {action}")
             return False
+
+
+def parse_labels(labels: dict) -> dict:
+    keywords_by_index = {}
+    config = {}
+    if labels.get("loggifly.monitor", "false").lower() != "true":
+        return config
+    logging.debug("Parsing loggifly monitor labels...")
+    keywords_to_append = []
+    for key, value in labels.items():
+        if not key.startswith("loggifly."):
+            continue
+        parts = key[9:].split('.') 
+        if len(parts) == 1:
+            # Simple comma-separated keyword list
+            if parts[0] == "keywords" and isinstance(value, str):
+                keywords_to_append = [kw.strip() for kw in value.split(",") if kw.strip()]
+            # Top Level Fields (e.g. ntfy_topic, attach_logfile, etc.)
+            else:
+                config[parts[0]] = value
+        # Keywords
+        elif parts[0] == "keywords":
+            index = parts[1]
+            # Simple keywords (direct value instead of dict)
+            if len(parts) == 2:
+                keywords_by_index[index] = value
+            # Complex Keyword (Dict with fields)
+            else:
+                field = parts[2]
+                if index not in keywords_by_index:
+                    keywords_by_index[index] = {}
+                keywords_by_index[index][field] = value
+    
+    config["keywords"] = [keywords_by_index[k] for k in sorted(keywords_by_index)]
+    if keywords_to_append:
+        config["keywords"].extend(keywords_to_append)
+    logging.debug(f"Parsed config: {config}")
+    return config
+
+
+def get_service_name(labels):
+    """
+    Tries to extract the service name with their replica id from container labels so that we have a unique name for each replica.
+    """
+    task_id = labels.get("com.docker.swarm.task.id")
+    task_name = labels.get("com.docker.swarm.task.name")
+    service_name = labels.get("com.docker.swarm.service.name", "")
+    if not any([service_name, task_id, task_name]):
+        return None
+    # Regex: service_name.<replica>.<task_id>
+    pattern = re.escape(service_name) + r"\.(\d+)\." + re.escape(task_id) + r"$"
+    regex = re.compile(pattern)
+    match = regex.search(task_name)
+    if match:
+        return f"{service_name}.{match.group(1)}"
+    else:
+        return service_name
