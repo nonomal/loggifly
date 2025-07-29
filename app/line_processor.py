@@ -10,7 +10,6 @@ import threading
 from threading import Thread, Lock
 from notifier import send_notification
 from config.config_model import GlobalConfig, KeywordItem, RegexItem
-# from docker_monitor import DockerLogMonitor
 
 class LogProcessor:
     """
@@ -80,9 +79,9 @@ class LogProcessor:
         self.hostname = hostname    # Hostname for multi-client setups; empty if single client
         self.container_stop_event = container_stop_event
         self.monitored_object_name = monitored_object_name
-        self.monitor_type = monitor_type
-        self.monitor_instance = monitor_instance    
-        self.config_key = config_key if config_key else monitored_object_name
+        self.monitor_type = monitor_type # container, swarm, systemd
+        self.monitor_instance = monitor_instance # DockerMonitor or SystemdMonitor (the instance from which the processor is called)
+        self.config_key = config_key if config_key else monitored_object_name # key in config.yaml
 
         self.patterns = []
         self.patterns_count = {pattern: 0 for pattern in self.__class__.COMPILED_STRICT_PATTERNS + self.__class__.COMPILED_FLEX_PATTERNS}
@@ -91,6 +90,11 @@ class LogProcessor:
         self.flush_thread_stopped.set()
         self.waiting_for_pattern = False
         self.valid_pattern = False
+
+        # These are updated in load_config_variables()
+        self.multi_line_mode = False 
+        self.time_per_keyword = {}
+
 
         self.load_config_variables(config)
 
@@ -126,12 +130,16 @@ class LogProcessor:
             self.container_config = self.config.systemd_services.get(self.config_key)
         elif self.monitor_type == "container":
             self.container_config = self.config.containers.get(self.config_key)
+            
+        if not self.container_config:
+            self.logger.error(f"No container config found for {self.config_key} in {self.monitor_type} config.")
+            return
 
         self.keywords.extend(self._get_keywords(self.container_config.keywords))
 
         self.container_message_config = {
             "attachment_lines": self.container_config.attachment_lines or self.config.settings.attachment_lines,
-            "notification_cooldown": self.container_config.notification_cooldown or self.config.settings.notification_cooldown,
+            "notification_cooldown": self.container_config.notification_cooldown if self.container_config.notification_cooldown is not None else self.config.settings.notification_cooldown,
             "notification_title": self.container_config.notification_title or self.config.settings.notification_title,
             "attach_logfile": self.container_config.attach_logfile if self.container_config.attach_logfile is not None else self.config.settings.attach_logfile,
             "excluded_keywords": self.container_config.excluded_keywords or self.config.settings.excluded_keywords,
@@ -140,7 +148,7 @@ class LogProcessor:
 
         self.multi_line_mode = False if self.monitor_type == "systemd" else self.config.settings.multi_line_entries
         self.action_cooldown= self.container_config.action_cooldown or self.config.settings.action_cooldown or 300
-        self.time_per_keyword = {}
+        
         self.last_action_time = None
         for keyword_dict in self.keywords:
             keyword = keyword_dict.get("keyword") or keyword_dict.get("regex")
@@ -289,7 +297,11 @@ class LogProcessor:
         Search for keyword or regex in log_line. Enforce notification cooldown unless ignore_keyword_time is True.
         Returns the matched keyword/regex or None.
         """
-        notification_cooldown = keyword_dict.get("notification_cooldown") if keyword_dict.get("notification_cooldown") else self.container_message_config["notification_cooldown"]
+        if keyword_dict.get("notification_cooldown"):
+            notification_cooldown = keyword_dict["notification_cooldown"]
+        else:
+            notification_cooldown = self.container_message_config.get("notification_cooldown", 10)
+            
         if "regex" in keyword_dict:
             regex = keyword_dict.get("regex")
             if ignore_keyword_time or time.time() - self.time_per_keyword.get(regex, 0) >= int(notification_cooldown):

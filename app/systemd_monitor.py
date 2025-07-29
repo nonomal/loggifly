@@ -5,6 +5,7 @@ import threading
 import subprocess
 import os
 from datetime import datetime
+import traceback
 
 from line_processor import LogProcessor
 from config.config_model import GlobalConfig
@@ -21,25 +22,21 @@ class UnitContext:
 class MonitoredUnitsRegistry:
     def __init__(self):
         self.by_unit_name = {}
-        self.by_filter_tuple = {}
     
     def add(self, unit):
         self.by_unit_name[unit.unit_name] = unit
-        self.by_filter_tuple[unit.filters] = unit
-        
-    def get_by_filter_tuple(self, filter_key):
-        return self.by_filter_tuple.get(filter_key)
-    
+            
     def get_all_filters(self):
         return [unit.filters for unit in self.by_unit_name.values()]
 
     def get_by_unit_name(self, unit_name):
         return self.by_unit_name.get(unit_name)
     
-    def update_unit(self, unit, filters, hosts):
-        self.by_unit_name[unit.unit_name].filters = tuple(filters)
-        self.by_unit_name[unit.unit_name].hosts = hosts
-    
+    def update_unit(self, unit_name, filters, hosts):
+        if unit := self.by_unit_name.get(unit_name):
+            unit.filters = tuple(filters)
+            unit.hosts = hosts
+
     def get_all_units(self):
         return self.by_unit_name.values()
 
@@ -134,7 +131,6 @@ class SystemdMonitor():
         
     def reload_config(self, config: GlobalConfig):
         self.logger.info("Reloading systemd monitor configuration.")
-        # Unmonitor existing services
         selected_units = [u for u in config.systemd_services] if config.systemd_services else []
         try: 
             for unit_context in self.registry.get_all_units():
@@ -147,17 +143,15 @@ class SystemdMonitor():
             self.configure_units_and_filters()
         except Exception as e:
             self.logger.error(f"Error during systemd monitor configuration reload: {e}")
+            self.logger.debug(f"Error during systemd monitor configuration reload: {traceback.format_exc()}")
             return ""
         self.monitored_units = selected_units
         return self._start_message()
 
+
     def format_entry(self, entry, template=None):
         timestamp = entry.get('__REALTIME_TIMESTAMP', '')
-        if isinstance(timestamp, datetime):
-            timestamp = timestamp.strftime("%b %d %H:%M:%S")
-        else:
-            timestamp = datetime.fromisoformat(timestamp).strftime("%b %d %H:%M:%S")      
-            
+        timestamp = format_timestamp(timestamp)
         if template:
             try:
                 entry['__REALTIME_TIMESTAMP'] = timestamp
@@ -172,12 +166,11 @@ class SystemdMonitor():
     def process_entry(self, entry):
         """Format the log message from a journal entry."""
         if os.environ.get("DEBUG_SYSTEMD_LOGS", "").strip().lower() == "true":
-            # log_entry = self.format_entry(entry)
-            self.logger.debug(entry)
+            self.logger.debug(self.format_entry(entry))
 
         for unit_context in self.registry.get_all_units():
             if all(entry.get(key) == value for key, value in unit_context.filter_dict.items()):
-                # self.logger.debug(f"Processing entry for unit {unit_context.unit_name} with filters {unit_context.filter_dict}:\n{entry}")
+                self.logger.debug(f"Processing entry for unit {unit_context.unit_name} with filters {unit_context.filter_dict}:\n{entry}")
                 if unit_context.hosts and (hostname := entry.get('_HOSTNAME')) and hostname not in unit_context.hosts:
                     self.logger.debug(f"Skipping entry for unit {unit_context.unit_name} because hostname {hostname} is not in {unit_context.hosts}")
                     return
@@ -351,3 +344,20 @@ class SystemdMonitor():
             return
         thread = threading.Thread(target=check_for_clean_up, daemon=True)
         thread.start()
+
+
+def format_timestamp(timestamp):
+    try:
+        if isinstance(timestamp, datetime):
+            return timestamp.strftime("%b %d %H:%M:%S")
+        elif isinstance(timestamp, str):
+            if timestamp.isdigit():
+                # systemd timestamp in microseconds
+                return datetime.fromtimestamp(int(timestamp) / 1_000_000).strftime("%b %d %H:%M:%S")
+            else:
+                return datetime.fromisoformat(timestamp).strftime("%b %d %H:%M:%S")
+        elif isinstance(timestamp, (int, float)):
+            return datetime.fromtimestamp(timestamp).strftime("%b %d %H:%M:%S")
+    except Exception:
+        pass  
+    return "invalid timestamp"
