@@ -9,8 +9,7 @@ import traceback
 import threading
 from threading import Thread, Lock
 from notifier import send_notification
-from pydantic import SecretStr
-from load_config import GlobalConfig, KeywordItem, RegexItem
+from config.config_model import GlobalConfig, KeywordItem, RegexItem
 # from docker_monitor import DockerLogMonitor
 
 class LogProcessor:
