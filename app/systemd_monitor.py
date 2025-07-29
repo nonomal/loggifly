@@ -5,13 +5,43 @@ import threading
 import subprocess
 import os
 from datetime import datetime
-import select
 
 from line_processor import LogProcessor
-from load_config import GlobalConfig
-from notifier import send_notification
+from config.config_model import GlobalConfig
+from utils.utils import generate_message
 
+class UnitContext:
+    def __init__(self, unit_name, filters, processor: LogProcessor, hosts=None):
+        self.unit_name = unit_name
+        self.filter_dict = {f.split("=")[0].strip(): f.split("=")[1].strip() for f in filters}
+        self.filters = tuple(filters)
+        self.hosts = hosts
+        self.processor = processor
 
+class MonitoredUnitsRegistry:
+    def __init__(self):
+        self.by_unit_name = {}
+        self.by_filter_tuple = {}
+    
+    def add(self, unit):
+        self.by_unit_name[unit.unit_name] = unit
+        self.by_filter_tuple[unit.filters] = unit
+        
+    def get_by_filter_tuple(self, filter_key):
+        return self.by_filter_tuple.get(filter_key)
+    
+    def get_all_filters(self):
+        return [unit.filters for unit in self.by_unit_name.values()]
+
+    def get_by_unit_name(self, unit_name):
+        return self.by_unit_name.get(unit_name)
+    
+    def update_unit(self, unit, filters, hosts):
+        self.by_unit_name[unit.unit_name].filters = tuple(filters)
+        self.by_unit_name[unit.unit_name].hosts = hosts
+    
+    def get_all_units(self):
+        return self.by_unit_name.values()
 
 class SystemdMonitor():
     """Monitor systemd journal entries for specific services."""
@@ -19,10 +49,10 @@ class SystemdMonitor():
     def __init__(self, config: GlobalConfig):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        self.processor_instances = {}
         self.shutdown_event = threading.Event()       
         self.reader_stopped_event = threading.Event()
         self.reader_stop_event = threading.Event()
+        self.registry = MonitoredUnitsRegistry()
         self.path = os.environ.get("JOURNAL_REMOTE_PATH", "/var/log/journal/remote/")
     
         file_max_size = os.environ.get("JOURNAL_REMOTE_MAX_FILE_SIZE", "10") 
@@ -43,6 +73,209 @@ class SystemdMonitor():
         except (ValueError, TypeError) as e:
             self.logger.error(f"Invalid systemd thread timeout value: {systemd_thread_timeout}. Using default 2 seconds. Error: {e}")
             self.systemd_thread_timeout = 2
+
+    def configure_units_and_filters(self):
+        if not self.config.systemd_services:
+            self.logger.warning("No systemd services configured for monitoring. Please check your config.yaml.")
+            return
+        for i, unit_name in enumerate(self.config.systemd_services):
+            hosts = self.config.systemd_services[unit_name].hosts
+            if (custom_filters := self.config.systemd_services[unit_name].custom_filters) and isinstance(custom_filters, list):
+                applied_filters = []
+                for f in custom_filters:
+                    if isinstance(f, str) and len(f.split("=")) == 2:
+                        self.reader.add_match(f)
+                        applied_filters.append(f)
+                    else:
+                        self.logger.error(f"Invalid filter: {f} for unit {unit_name}. Please check your config.yaml.")
+            else:
+                self.reader.add_match(_SYSTEMD_UNIT=unit_name)
+                applied_filters = [f"_SYSTEMD_UNIT={unit_name}"]
+            self.logger.debug(f"Applied filters to {unit_name}: {', '.join(applied_filters)}")
+
+            if self.registry.get_by_unit_name(unit_name):
+                self.registry.update_unit(unit_name, applied_filters, hosts)
+            else:
+                processor = LogProcessor(self.logger, 
+                                self.config,
+                                monitored_object_name=unit_name,
+                                monitor_instance=self,
+                                monitor_type="systemd",
+                                config_key=unit_name
+                                )   
+                self.registry.add(UnitContext(unit_name, applied_filters, processor, hosts))
+            
+            if i < len(self.config.systemd_services) - 1:
+                self.reader.add_disjunction()
+
+    def start(self):
+        self._start_journal_remote_service()
+        self.reader = journal.Reader(path="/var/log/journal/remote/")
+        self.reader.data_threshold = 64 * 1024 * 1024
+        # self.reader.seek_tail()  # Start at the end of the journal
+        self.reader.seek_realtime(datetime.now())
+        self.monitored_units = [u for u in self.config.systemd_services] if self.config.systemd_services else []
+        if not self.config.systemd_services:
+            logging.warning("No systemd services configured for monitoring. Please check your config.yaml.")
+            # return
+        self.configure_units_and_filters()
+
+        self._monitor_systemd_journal()
+        if os.environ.get("CLEANUP_JOURNAL_LOGS", "true").strip().lower() == "true":
+            self._clean_up_journal_logs()  # Start cleanup thread
+
+        return self._start_message()
+    
+    def _start_message(self):
+        # Compose and log/send a summary message about monitored services
+        selected_units = [s for s in self.monitored_units]
+        message = generate_message(selected_units, [], "Systemd Services")
+        return message
+        
+    def reload_config(self, config: GlobalConfig):
+        self.logger.info("Reloading systemd monitor configuration.")
+        # Unmonitor existing services
+        selected_units = [u for u in config.systemd_services] if config.systemd_services else []
+        try: 
+            for unit_context in self.registry.get_all_units():
+                if unit_context.unit_name not in selected_units:
+                    continue
+                unit_context.processor.load_config_variables(self.config)
+
+            # Monitor new services and stop monitoring those not in the new config
+            self.reader.flush_matches()  # Clear existing matches
+            self.configure_units_and_filters()
+        except Exception as e:
+            self.logger.error(f"Error during systemd monitor configuration reload: {e}")
+            return ""
+        self.monitored_units = selected_units
+        return self._start_message()
+
+    def format_entry(self, entry, template=None):
+        timestamp = entry.get('__REALTIME_TIMESTAMP', '')
+        if isinstance(timestamp, datetime):
+            timestamp = timestamp.strftime("%b %d %H:%M:%S")
+        else:
+            timestamp = datetime.fromisoformat(timestamp).strftime("%b %d %H:%M:%S")      
+            
+        if template:
+            try:
+                entry['__REALTIME_TIMESTAMP'] = timestamp
+                if template:
+                    return template.format(**entry)
+            except Exception as e:
+                self.logger.error(f"Error formatting entry with provided template: {e}")
+
+        unit = entry.get('SYSLOG_IDENTIFIER', entry.get('_SYSTEMD_UNIT', '')) 
+        return f"{timestamp} {entry.get('_HOSTNAME', '')} {unit}[{entry.get('_PID', '')}]: {entry.get('MESSAGE', '')}"
+
+    def process_entry(self, entry):
+        """Format the log message from a journal entry."""
+        if os.environ.get("DEBUG_SYSTEMD_LOGS", "").strip().lower() == "true":
+            # log_entry = self.format_entry(entry)
+            self.logger.debug(entry)
+
+        for unit_context in self.registry.get_all_units():
+            if all(entry.get(key) == value for key, value in unit_context.filter_dict.items()):
+                # self.logger.debug(f"Processing entry for unit {unit_context.unit_name} with filters {unit_context.filter_dict}:\n{entry}")
+                if unit_context.hosts and (hostname := entry.get('_HOSTNAME')) and hostname not in unit_context.hosts:
+                    self.logger.debug(f"Skipping entry for unit {unit_context.unit_name} because hostname {hostname} is not in {unit_context.hosts}")
+                    return
+                message = entry.get('MESSAGE', '')
+                processor = unit_context.processor
+                processor.hostname = entry.get('_HOSTNAME', '')
+                processor.process_line(message)
+                break
+        else:
+            return
+        
+    def _monitor_systemd_journal(self):
+        def systemd_monitor():
+            error_count, last_error_time = 0, time.time()
+            while not self.shutdown_event.is_set():
+                try:
+                    while not self.reader_stop_event.is_set() and not self.shutdown_event.is_set():
+                        self.reader_stopped_event.clear()  # Reset the stopped event
+                        wait_result = self.reader.wait(timeout=self.systemd_thread_timeout) 
+                        if wait_result != journal.APPEND:
+                            continue
+                        self.reader.process()  
+                        
+                        for entry in self.reader:
+                            self.process_entry(entry)
+                            if self.shutdown_event.is_set():
+                                self.logger.info("Systemd journal monitoring stopped.")
+                                break
+                            
+                except Exception as e:
+                    if self.shutdown_event.is_set():
+                        self.logger.info("Systemd journal monitoring stopped. LoggiFly is shutting down.")
+                        break
+                    self.logger.error(f"Error in systemd journal monitoring: {e}")
+                    error_count += 1
+                finally:
+                    self.reader_stopped_event.set()  # Signal that the reader has stopped
+                    if time.time() - last_error_time > 60:
+                        error_count = 0
+                    last_error_time = time.time()
+                    if error_count > 5:
+                        self.logger.error("Too many errors in systemd journal monitoring. Exiting.")
+                        break
+                    time.sleep(1)  # Wait before retrying 
+
+            self.logger.info("Systemd journal monitoring stopped.")
+            
+            if not self.shutdown_event.is_set():
+                self.cleanup()
+    
+        thread = threading.Thread(target=systemd_monitor, daemon=True)
+        thread.start()
+
+    def cleanup(self):
+        """Clean up resources."""
+        self.logger.info("Cleaning up systemd journal monitor resources.")
+        try:
+            self.reader.close()
+            logging.info("Systemd journal reader closed.")
+        except Exception as e:
+            self.logger.error(f"Error closing systemd journal reader: {e}")
+        
+        self.process.terminate()
+        self.shutdown_journal_remote_service()
+
+    def tail_logs(self, monitored_object_name, monitor_type="systemd", lines=10, journal_path="/var/log/journal/remote/"):
+        r = None
+        try:
+            self.logger.debug(f"Attempting to read the last {lines} entries from the journal at {journal_path}")
+            r = journal.Reader(path=journal_path)
+            r.data_threshold = 64 * 1024 * 1024
+            if unit_context := self.registry.get_by_unit_name(monitored_object_name):
+                for filter, value in unit_context.filter_dict.items():
+                    r.add_match(f"{filter}={value}")
+            else:
+                self.logger.warning(f"No unit context found for {monitored_object_name}. Using default filter.")
+                r.add_match(_SYSTEMD_UNIT=monitored_object_name)
+            r.seek_tail()
+            entries = []
+            for _ in range(lines):
+                entry = r.get_previous()
+                if not entry:
+                    break
+                log_entry = self.format_entry(entry)
+                entries.append(log_entry)  
+            log_tail = "\n".join(list(reversed(entries)))
+            return log_tail
+        except OSError as e:
+            self.logger.error(f"Can not tail logs for systemd service '{monitored_object_name}': Journal access error: {str(e)}")
+            return []
+        except Exception as e:
+            self.logger.error(f"Can not tail logs for systemd service: Error: {str(e)}")
+        finally:
+            if r is not None:
+                try:
+                    r.close()
+                except OSError:
+                    pass
 
     def _start_journal_remote_service(self):
         """Start the systemd journal-remote service."""
@@ -118,189 +351,3 @@ class SystemdMonitor():
             return
         thread = threading.Thread(target=check_for_clean_up, daemon=True)
         thread.start()
-
-    def _add_procesor(self, unit):
-        if unit in self.processor_instances:
-            self.logger.warning(f"Processor for unit {unit} already exists. Skipping creation.")
-            return
-        processor = LogProcessor(self.logger, 
-                                self.config,
-                                monitored_object_name=unit,
-                                monitor_instance=self,
-                                monitor_type="systemd",
-                                config_key=unit
-                                )   
-        self.processor_instances[unit] = {"processor": processor}
-
-    def configure_units_and_filters(self):
-        if not self.config.systemd_services:
-            self.logger.warning("No systemd services configured for monitoring. Please check your config.yaml.")
-            return
-        for i, unit in enumerate(self.config.systemd_services):
-            if unit not in self.processor_instances:
-                self._add_procesor(unit)
-            if (custom_filters := self.config.systemd_services[unit].custom_filters) and isinstance(custom_filters, list):
-                for filter in custom_filters:
-                    if isinstance(filter, str):
-                        self.reader.add_match(filter)
-                    else:
-                        self.logger.error(f"Invalid filter type: {type(filter)} for unit {unit}. Please check your config.yaml.")
-            else:
-                self.reader.add_match(_SYSTEMD_UNIT=unit)
-            if i < len(self.config.systemd_services) - 1:
-                self.reader.add_disjunction()
-
-    def start(self):
-        self._start_journal_remote_service()
-        self.reader = journal.Reader(path="/var/log/journal/remote/")
-        self.reader.data_threshold = 64 * 1024 * 1024
-        # self.reader.seek_tail()  # Start at the end of the journal
-        self.reader.seek_realtime(datetime.now())
-        self.monitored_units = [u for u in self.config.systemd_services] if self.config.systemd_services else []
-        if not self.config.systemd_services:
-            logging.warning("No systemd services configured for monitoring. Please check your config.yaml.")
-            # return
-        self.configure_units_and_filters()
-
-        self._monitor_systemd_journal()
-        if os.environ.get("CLEANUP_JOURNAL_LOGS", "true").strip().lower() == "true":
-            self._clean_up_journal_logs()  # Start cleanup thread
-
-        return self._start_message()
-    
-    def _start_message(self):
-        # Compose and log/send a summary message about monitored services
-        monitored_units_message = "\n - ".join(s for s in self.monitored_units)
-        message = (
-            f"These systemd-services are being monitored:\n - {monitored_units_message}"
-            )
-        return message
-        
-    def reload_config(self, config: GlobalConfig):
-        self.logger.info("Reloading systemd monitor configuration.")
-        # Unmonitor existing services
-        selected_units = [u for u in config.systemd_services] if config.systemd_services else []
-        try: 
-            for unit in [u for u in self.processor_instances if u in selected_units]:
-                processor = self.processor_instances[unit]["processor"]
-                processor.load_config_variables(self.config)
-
-            # Monitor new services and stop monitoring those not in the new config
-            self.reader.flush_matches()  # Clear existing matches
-            self.configure_units_and_filters()
-        except Exception as e:
-            self.logger.error(f"Error during systemd monitor configuration reload: {e}")
-            return ""
-        self.monitored_units = selected_units
-        return self._start_message()
-        
-    
-
-    def format_entry(self, entry, template="{__REALTIME_TIMESTAMP} {_HOSTNAME} {_SYSTEMD_UNIT}[{_PID}]: {MESSAGE}"):
-        timestamp = entry.get('__REALTIME_TIMESTAMP', '')
-        if isinstance(timestamp, datetime):
-            timestamp = timestamp.strftime("%b %d %H:%M:%S")
-        else:
-            timestamp = datetime.fromisoformat(timestamp).strftime("%b %d %H:%M:%S")      
-        entry['__REALTIME_TIMESTAMP'] = timestamp
-        if template:
-            return template.format(**entry)
-
-    def process_entry(self, entry):
-        """Format the log message from a journal entry."""
-        unit = entry.get('_SYSTEMD_UNIT', '')
-        message = entry.get('MESSAGE', '')
-        hostname = entry.get('_HOSTNAME', '')
-        processor_instance = self.processor_instances.get(unit)
-        if os.environ.get("DEBUG_SYSTEMD_LOGS", "").strip().lower() == "true":
-            log_entry = self.format_entry(entry)
-            self.logger.debug(log_entry)
-
-        if processor_instance:
-            processor = processor_instance["processor"]
-            processor.hostname = hostname
-            processor.process_line(message)
-
-    def _monitor_systemd_journal(self):
-
-        def systemd_monitor():
-            error_count, last_error_time = 0, time.time()
-            while not self.shutdown_event.is_set():
-                try:
-                    while not self.reader_stop_event.is_set() and not self.shutdown_event.is_set():
-                        self.reader_stopped_event.clear()  # Reset the stopped event
-                        wait_result = self.reader.wait(timeout=self.systemd_thread_timeout) 
-                        if wait_result != journal.APPEND:
-                            continue
-                        self.reader.process()  
-                        
-                        for entry in self.reader:
-                            self.process_entry(entry)
-                            if self.shutdown_event.is_set():
-                                self.logger.info("Systemd journal monitoring stopped.")
-                                break
-                            
-                except Exception as e:
-                    if self.shutdown_event.is_set():
-                        self.logger.info("Systemd journal monitoring stopped. LoggiFly is shutting down.")
-                        break
-                    self.logger.error(f"Error in systemd journal monitoring: {e}")
-                    error_count += 1
-                finally:
-                    self.reader_stopped_event.set()  # Signal that the reader has stopped
-                    if time.time() - last_error_time > 60:
-                        error_count = 0
-                    last_error_time = time.time()
-                    if error_count > 5:
-                        self.logger.error("Too many errors in systemd journal monitoring. Exiting.")
-                        break
-                    time.sleep(1)  # Wait before retrying 
-
-            self.logger.info("Systemd journal monitoring stopped.")
-            
-            if not self.shutdown_event.is_set():
-                self.cleanup()
-    
-        thread = threading.Thread(target=systemd_monitor, daemon=True)
-        thread.start()
-
-    def cleanup(self):
-        """Clean up resources."""
-        self.logger.info("Cleaning up systemd journal monitor resources.")
-        try:
-            self.reader.close()
-            logging.info("Systemd journal reader closed.")
-        except Exception as e:
-            self.logger.error(f"Error closing systemd journal reader: {e}")
-        
-        self.process.terminate()
-        self.shutdown_journal_remote_service()
-
-    def tail_logs(self, monitored_object_name, n=10, journal_path="/var/log/journal/remote/", monitor_type="systemd"):
-        r = None
-        try:
-            self.logger.debug(f"Attempting to read the last {n} entries from the journal at {journal_path}")
-            r = journal.Reader(path=journal_path)
-            r.data_threshold = 64 * 1024 * 1024
-            r.add_match(_SYSTEMD_UNIT=monitored_object_name)
-            r.seek_tail()
-            entries = []
-            for _ in range(n):
-                entry = r.get_previous()
-                if not entry:
-                    break
-                log_entry = self.format_entry(entry)
-                entries.append(log_entry)  
-            log_tail = "\n".join(list(reversed(entries)))
-            return log_tail
-        except OSError as e:
-            self.logger.error(f"Can not tail logs for systemd service '{monitored_object_name}': Journal access error: {str(e)}")
-            return []
-        except Exception as e:
-            self.logger.error(f"Can not tail logs for systemd service: Error: {str(e)}")
-        finally:
-            if r is not None:
-                try:
-                    r.close()
-                except OSError:
-                    pass

@@ -15,7 +15,7 @@ from typing import Any
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from load_config import load_config, format_pydantic_error
+from config.load_config import load_config, format_pydantic_error
 from docker_monitor import DockerLogMonitor
 from notifier import send_notification
 
@@ -91,7 +91,7 @@ class ConfigHandler(FileSystemEventHandler):
             messages.append(monitor.reload_config(self.config))
         message_line_break = "\n\n" + "-" * 60 + "\n\n"
         message = message_line_break.join(messages) if messages else "LoggiFly is not mointoring anything."
-        message ="-" + "\n" * 60 + message + "\n" + "-" * 60
+        message = "-" * 60 + "\n" + message + "\n" + "-" * 60
 
         logging.info(f"Config reloaded successfully.\n{message}")
         if self.config.settings.disable_config_reload_message is False:

@@ -4,7 +4,7 @@ import base64
 import logging
 from pydantic import SecretStr
 import urllib.parse
-from load_config import GlobalConfig
+from config.config_model import GlobalConfig
 
 logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@ import logging
 import copy
 import yaml
 
-from config_model import (
+from .config_model import (
     GlobalConfig,
     SwarmServiceConfig,
     ContainerConfig,
