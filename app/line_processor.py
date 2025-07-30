@@ -10,6 +10,13 @@ import threading
 from threading import Thread, Lock
 from notifier import send_notification
 from config.config_model import GlobalConfig, KeywordItem, RegexItem
+from constants import (
+    MonitorType, 
+    COMPILED_STRICT_PATTERNS, 
+    COMPILED_FLEX_PATTERNS,
+    ACTION_STOP,
+    ACTION_RESTART
+)
 
 class LogProcessor:
     """
@@ -21,82 +28,64 @@ class LogProcessor:
     Pattern detection enables grouping of multi-line log entries 
     because every line that does not match the detected pattern is treated as part of the previous entry and added to the buffer.
     """
-    STRICT_PATTERNS = [
-        # Timestamp and log level at line start
-        r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?\] \[(?:INFO|ERROR|DEBUG|WARN|WARNING|CRITICAL)\]", # 
-        r"^\d{4}-\d{2}-\d{2}(?:, | )\d{2}:\d{2}:\d{2}(?:,\d{3})? (?:INFO|ERROR|DEBUG|WARN|WARNING|CRITICAL)",
-
-        # ISO timestamp in brackets
-        r"^\[\d{4}-\d{2}-\d{2}(?:T|, | )\d{2}:\d{2}:\d{2}(?:Z|[\.,]\d{2,6}|[+-]\d{2}:\d{2}| [+-]\d{4})\]", # [2025-02-17T03:23:07Z] or [2025-02-17 04:22:59 +0100] or [2025-02-18T03:23:05.436627]
-
-        # Month in brackets
-        r"^\[(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, \d{4} \d{2}:\d{2}:\d{2}\]",                                                  # [Feb 17, 2025 10:13:02]
-        r"^\[\d{1,2}\/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\/\d{4}(?:\:| |\/)\d{2}:\d{2}:\d{2}(?:Z||\s[+\-]\d{2}:\d{2}|\s[+\-]\d{4})\]", # [17/Feb/2025:10:13:02 +0000]
-
-        # ISO timestamp without brackets
-        r"^\b\d{4}-\d{2}-\d{2}(?:T|, | )\d{2}:\d{2}:\d{2}(?:Z|[\.,]\d{2,6}|[+-]\d{2}:\d{2}| [+-]\d{4})\b",
-
-        # Month without brackets
-        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, \d{4} \d{2}:\d{2}:\d{2}\b",
-        r"\b\d{1,2}\/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\/\d{4}(?:\:| |\/)\d{2}:\d{2}:\d{2}(?:Z||\s[+\-]\d{2}:\d{2}|\s[+\-]\d{4})\b",   # 17/Feb/2025:10:13:02 +0000
-        
-        # Unix-like timestamps
-        r"^\[\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}\.\d{2,6}\]",
-        
-        # Log level at line start
-        r"^\[(?:INFO|ERROR|DEBUG|WARN|WARNING|CRITICAL)\]",
-        r"^\((?:INFO|ERROR|DEBUG|WARN|WARNING|CRITICAL)\)"
-    ]
-    FLEX_PATTERNS = [
-        # Generic timestamps (fallback)
-        r"\b\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\b",
-        r"\b\d{4}-\d{2}-\d{2}(?:T|, | )\d{2}:\d{2}:\d{2}(?:Z|[\.,]\d{2,6}|[+-]\d{2}:\d{2}| [+-]\d{4})\b", # 2025-02-17T03:23:07Z
-        r"\b(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])-\d{4} \d{2}:\d{2}:\d{2}\b",
-        r"(?i)\b\d{2}\/\d{2}\/\d{4}(?:,\s+|:|\s+])\d{1,2}:\d{2}:\d{2}\s*(?:AM|PM)?\b",
-        r"\b\d{10}\.\d+\b",                                                          # 1739762586.0394847
-        # Log level (fallback)
-        r"(?i)(?<=^)\b(?:INFO|ERROR|DEBUG|WARN(?:ING)?|CRITICAL)\b(?=\s|:|$)",      
-        r"(?i)(?<=\s)\b(?:INFO|ERROR|DEBUG|WARN(?:ING)?|CRITICAL)\b(?=\s|:|$)",
-        r"(?i)\[(?:INFO|ERROR|DEBUG|WARN(?:ING)?|CRITICAL)\]",
-        r"(?i)\((?:INFO|ERROR|DEBUG|WARN(?:ING)?|CRITICAL)\)",
-        r"(?i)\d{2}/\d{2}/\d{4},\s+\d{1,2}:\d{2}:\d{2}\s+(?:AM|PM)",
-    ]
-
-    COMPILED_STRICT_PATTERNS = [re.compile(pattern, re.ASCII) for pattern in STRICT_PATTERNS]
-    COMPILED_FLEX_PATTERNS = [re.compile(pattern, re.ASCII) for pattern in FLEX_PATTERNS]
+    # Use the pre-compiled patterns from constants.py
+    COMPILED_STRICT_PATTERNS = COMPILED_STRICT_PATTERNS
+    COMPILED_FLEX_PATTERNS = COMPILED_FLEX_PATTERNS
 
     def __init__(self,
                  logger, 
                  config: GlobalConfig, 
+                 entity_config,
                  monitor_instance,
-                 monitored_object_name, 
+                 entity_name, 
                  monitor_type,
                  hostname=None, 
                  container_stop_event=None, 
-                 config_key=None,
                  ):
         self.logger = logger
         self.hostname = hostname    # Hostname for multi-client setups; empty if single client
         self.container_stop_event = container_stop_event
-        self.monitored_object_name = monitored_object_name
+        self.entity_name = entity_name
         self.monitor_type = monitor_type # container, swarm, systemd
         self.monitor_instance = monitor_instance # DockerMonitor or SystemdMonitor (the instance from which the processor is called)
-        self.config_key = config_key if config_key else monitored_object_name # key in config.yaml
+        # self.config_key = config_key if config_key else entity_name # key in config.yaml
+        self.entity_config = entity_config
 
         self.patterns = []
         self.patterns_count = {pattern: 0 for pattern in self.__class__.COMPILED_STRICT_PATTERNS + self.__class__.COMPILED_FLEX_PATTERNS}
         self.lock_buffer = Lock()
         self.flush_thread_stopped = threading.Event()
         self.flush_thread_stopped.set()
+        
         self.waiting_for_pattern = False
         self.valid_pattern = False
+        self.line_count = 0
+        self.line_limit = 300
 
         # These are updated in load_config_variables()
         self.multi_line_mode = False 
         self.time_per_keyword = {}
 
+        self.load_config_variables(config, entity_config)
+        # If multi-line mode is on, find starting pattern in logs
+        if self.multi_line_mode is True and self.monitor_type != MonitorType.SYSTEMD:
+            if self.valid_pattern is False:
+                log_tail = self.monitor_instance.tail_logs(entity_name=self.entity_name, 
+                                                            monitor_type=self.monitor_type, 
+                                                            lines=100)
+                if log_tail:
+                    self._find_starting_pattern(log_tail)
+                if self.valid_pattern:
+                    self.logger.debug(f"{self.entity_name}: Mode: Multi-Line. Found starting pattern(s) in logs.")
+                else:
+                    self.logger.debug(f"{self.entity_name}: Mode: Single-Line. Could not find starting pattern in the logs. Continuing the search in the next {self.line_limit - self.line_count} lines")
 
-        self.load_config_variables(config)
+            self.buffer = []
+            self.log_stream_timeout = 1 # Not yet configurable
+            self.log_stream_last_updated = time.time()
+            # Start background thread for buffer flushing
+            self._start_flush_thread()
+
 
     def _get_keywords(self, keywords):
         """
@@ -114,65 +103,37 @@ class LogProcessor:
                 returned_keywords.append(item)
         return returned_keywords
 
-    def load_config_variables(self, config):
+    def load_config_variables(self, config, entity_config):
         """
         Load and merge configuration for global and container-specific keywords and settings.
         Called on initialization and when reloading config.
         """
         self.config = config
         config_global_keywords = self.config.global_keywords
-        self.keywords = self._get_keywords(config_global_keywords.keywords)
-        
-
-        if self.monitor_type == "swarm":
-            self.container_config = self.config.swarm_services.get(self.config_key)
-        elif self.monitor_type == "systemd":
-            self.container_config = self.config.systemd_services.get(self.config_key)
-        elif self.monitor_type == "container":
-            self.container_config = self.config.containers.get(self.config_key)
-            
-        if not self.container_config:
-            self.logger.error(f"No container config found for {self.config_key} in {self.monitor_type} config.")
+        self.keywords = self._get_keywords(config_global_keywords.keywords)            
+        if not self.entity_config:
+            self.logger.error(f"No container config found for {self.entity_name} in {self.monitor_type} config.")
             return
 
-        self.keywords.extend(self._get_keywords(self.container_config.keywords))
+        self.keywords.extend(self._get_keywords(self.entity_config.keywords))
 
         self.container_message_config = {
-            "attachment_lines": self.container_config.attachment_lines or self.config.settings.attachment_lines,
-            "notification_cooldown": self.container_config.notification_cooldown if self.container_config.notification_cooldown is not None else self.config.settings.notification_cooldown,
-            "notification_title": self.container_config.notification_title or self.config.settings.notification_title,
-            "attach_logfile": self.container_config.attach_logfile if self.container_config.attach_logfile is not None else self.config.settings.attach_logfile,
-            "excluded_keywords": self.container_config.excluded_keywords or self.config.settings.excluded_keywords,
-            "hide_regex_in_title": self.container_config.hide_regex_in_title if self.container_config.hide_regex_in_title is not None else self.config.settings.hide_regex_in_title,
+            "attachment_lines": self.entity_config.attachment_lines or self.config.settings.attachment_lines,
+            "notification_cooldown": self.entity_config.notification_cooldown if self.entity_config.notification_cooldown is not None else self.config.settings.notification_cooldown,
+            "notification_title": self.entity_config.notification_title or self.config.settings.notification_title,
+            "attach_logfile": self.entity_config.attach_logfile if self.entity_config.attach_logfile is not None else self.config.settings.attach_logfile,
+            "excluded_keywords": self.entity_config.excluded_keywords or self.config.settings.excluded_keywords,
+            "hide_regex_in_title": self.entity_config.hide_regex_in_title if self.entity_config.hide_regex_in_title is not None else self.config.settings.hide_regex_in_title,
         }
 
-        self.multi_line_mode = False if self.monitor_type == "systemd" else self.config.settings.multi_line_entries
-        self.action_cooldown= self.container_config.action_cooldown or self.config.settings.action_cooldown or 300
+        self.multi_line_mode = False if self.monitor_type == MonitorType.SYSTEMD else self.config.settings.multi_line_entries
+        self.action_cooldown= self.entity_config.action_cooldown or self.config.settings.action_cooldown or 300
         
         self.last_action_time = None
         for keyword_dict in self.keywords:
             keyword = keyword_dict.get("keyword") or keyword_dict.get("regex")
             self.time_per_keyword[keyword] = 0
 
-        if self.multi_line_mode is True and not self.monitor_type == "systemd":
-            self.line_count = 0
-            self.line_limit = 300
-            if self.valid_pattern is False:
-                log_tail = self.monitor_instance.tail_logs(monitored_object_name=self.monitored_object_name, 
-                                                            monitor_type=self.monitor_type, 
-                                                            lines=100)
-                if log_tail:
-                    self._find_starting_pattern(log_tail)
-                if self.valid_pattern:
-                    self.logger.debug(f"{self.monitored_object_name}: Mode: Multi-Line. Found starting pattern(s) in logs.")
-                else:
-                    self.logger.debug(f"{self.monitored_object_name}: Mode: Single-Line. Could not find starting pattern in the logs. Continuing the search in the next {self.line_limit - self.line_count} lines")
-
-            self.buffer = []
-            self.log_stream_timeout = 1 # Not yet configurable
-            self.log_stream_last_updated = time.time()
-            # Start background thread for buffer flushing
-            self._start_flush_thread()
 
     def get_message_config(self, keyword_message_config):
         """
@@ -227,13 +188,13 @@ class LogProcessor:
         for pattern, count in sorted_patterns:
             if pattern not in self.patterns and count > threshold:
                 self.patterns.append(pattern)
-                self.logger.debug(f"{self.monitored_object_name}: Found pattern: {pattern} with {count} matches of {self.line_count} lines. {round(count / self.line_count * 100, 2)}%")
+                self.logger.debug(f"{self.entity_name}: Found pattern: {pattern} with {count} matches of {self.line_count} lines. {round(count / self.line_count * 100, 2)}%")
                 self.valid_pattern = True
         if self.patterns == []:
             self.valid_pattern = False
         if self.line_count >= self.line_limit:
             if self.patterns == []:
-                self.logger.info(f"{self.monitored_object_name}: No pattern found in logs after {self.line_limit} lines. Mode: single-line")
+                self.logger.info(f"{self.entity_name}: No pattern found in logs after {self.line_limit} lines. Mode: single-line")
 
         self.waiting_for_pattern = False
 
@@ -255,9 +216,9 @@ class LogProcessor:
                         self._handle_and_clear_buffer()
                 time.sleep(1)
             self.flush_thread_stopped.set()
-            self.logger.debug(f"Flush Thread stopped for Container {self.monitored_object_name}")
+            self.logger.debug(f"Flush Thread stopped for Container {self.entity_name}")
 
-        if self.monitor_type != "systemd" and self.flush_thread_stopped.is_set():
+        if self.monitor_type != MonitorType.SYSTEMD and self.flush_thread_stopped.is_set():
             self.flush_thread = Thread(target=check_flush, daemon=True)
             self.flush_thread.start()
 
@@ -324,8 +285,8 @@ class LogProcessor:
         If a keyword is found, trigger notification and/or container action.
         """
         keywords_found = []
-        excluded_keywords = self.container_config.excluded_keywords if self.container_config.excluded_keywords else []
-        keyword_message_config = {"message": log_line, "monitored_object_name": self.monitored_object_name, "monitor_type": self.monitor_type}
+        excluded_keywords = self.entity_config.excluded_keywords if self.entity_config.excluded_keywords else []
+        keyword_message_config = {"message": log_line, "entity_name": self.entity_name, "monitor_type": self.monitor_type}
         template_found = False
         for keyword_dict in self.keywords:
             found = self._search_keyword(log_line, keyword_dict)
@@ -347,12 +308,12 @@ class LogProcessor:
                 for keyword in self._get_keywords(excluded_keywords):
                     found = self._search_keyword(log_line, keyword, ignore_keyword_time=True)
                     if found:
-                        self.logger.debug(f"Keyword(s) '{keywords_found}' found in '{self.monitored_object_name} but IGNORED because excluded keyword '{found}' was found")
+                        self.logger.debug(f"Keyword(s) '{keywords_found}' found in '{self.entity_name} but IGNORED because excluded keyword '{found}' was found")
                         return
 
             keyword_message_config["keywords_found"] = keywords_found
             action = keyword_message_config.get("action")
-            if self.monitor_type == "container" and action is not None:
+            if self.monitor_type == MonitorType.CONTAINER and action is not None:
                 if self.last_action_time is None or (self.last_action_time is not None and time.time() - self.last_action_time >= max(int(self.action_cooldown), 60)):
                     success = self._container_action(action)
                     action = (action, success)
@@ -365,7 +326,7 @@ class LogProcessor:
             message_config = self.get_message_config(keyword_message_config)
             attach_logfile = message_config["attach_logfile"]
             formatted_log_entry ="\n  -----  LOG-ENTRY  -----\n" + ' | ' + '\n | '.join(log_line.splitlines()) + "\n   -----------------------"
-            self.logger.info(f"The following keywords were found in {self.monitored_object_name}: {keywords_found}."
+            self.logger.info(f"The following keywords were found in {self.entity_name}: {keywords_found}."
                         + (f" (A Log FIle will be attached)" if attach_logfile else "")
                         + f"{formatted_log_entry}"
                         )
@@ -381,11 +342,11 @@ class LogProcessor:
             file_path = self._log_attachment(message_config["attachment_lines"])
             message_config["file_path"] = file_path
         send_notification(self.config,
-                          monitored_object_name=self.monitored_object_name,
+                          entity_name=self.entity_name,
                           title=title,
                           message=message_config["message"],
                           message_config=message_config,
-                          container_config=self.container_config,
+                          container_config=self.entity_config,
                           hostname=self.hostname)
 
         if file_path and isinstance(file_path, str):
@@ -400,7 +361,7 @@ class LogProcessor:
         Write the last N lines of container logs to a temporary file for notification attachment.
         Returns the file path or None on error.
         """
-        base_name = f"last_{number_attachment_lines}_lines_from_{self.monitored_object_name}.log"
+        base_name = f"last_{number_attachment_lines}_lines_from_{self.entity_name}.log"
         folder = "/tmp/"
 
         def find_available_name(filename, number=1):
@@ -419,7 +380,7 @@ class LogProcessor:
             file_path = folder + base_name
         try:
             os.makedirs("/tmp", exist_ok=True)
-            log_tail = self.monitor_instance.tail_logs(monitored_object_name=self.monitored_object_name, 
+            log_tail = self.monitor_instance.tail_logs(entity_name=self.entity_name, 
                                                        monitor_type=self.monitor_type, 
                                                        lines=number_attachment_lines)
             if log_tail:
@@ -428,18 +389,22 @@ class LogProcessor:
                     logging.debug(f"Wrote file: {file_path}")
                     return file_path
         except Exception as e:
-            self.logger.error(f"Could not create log attachment file for Container {self.monitored_object_name}: {e}")
+            self.logger.error(f"Could not create log attachment file for Container {self.entity_name}: {e}")
             return None
 
     def _container_action(self, action):
         """
         Perform the specified container action (stop or restart). Returns True on success, False on error.
         """
-        if self.monitor_type == "container":
-            result = self.monitor_instance.container_action(self.monitored_object_name, action)
+        if self.monitor_type == MonitorType.CONTAINER:
+            # Validate that action is a supported action
+            if action not in [ACTION_STOP, ACTION_RESTART]: # "stop" and "restart" are defined in constants.py
+                self.logger.error(f"Unsupported action {action} requested for container {self.entity_name}")
+                return False
+            result = self.monitor_instance.container_action(self.entity_name, action)
             return result
         else:
-            self.logger.debug(f"Skipping container action for {self.monitored_object_name} because it is a swarm service or not a docker container.")
+            self.logger.debug(f"Skipping container action for {self.entity_name} because it is a swarm service or not a docker container.")
             return False
 
 
@@ -450,19 +415,21 @@ def get_notification_title(message_config, action):
     title = ""
     keywords_found = message_config.get("keywords_found", "")
     notification_title = message_config.get("notification_title", "default")
-    monitored_object_name = message_config.get("monitored_object_name", "") 
+    entity_name = message_config.get("entity_name", "") 
+    monitor_type = message_config.get("monitor_type", MonitorType.CONTAINER)
 
     if notification_title.strip().lower() != "default":
         template = ""
         try:
             keywords = ', '.join(f"'{word}'" for word in keywords_found)
             template = notification_title.strip()
-            template_fields = {"container": monitored_object_name, 
-                               "keywords": keywords, 
-                               "keyword": keywords, 
-                               "systemd_service": monitored_object_name, 
-                               "swarm_service": monitored_object_name
-                               }
+            template_fields = {
+                "container": entity_name if monitor_type == MonitorType.CONTAINER else "",
+                "keywords": keywords, 
+                "keyword": keywords, 
+                "systemd_service": entity_name if monitor_type == MonitorType.SYSTEMD else "", 
+                "swarm_service": entity_name if monitor_type == MonitorType.SWARM else ""
+            }
             title = template.format(**template_fields)
         except KeyError as e:
             logging.error(f"Missing key in template: {template}. You can only put these keys in the template: 'container, keywords'. Error: {e}")
@@ -472,23 +439,23 @@ def get_notification_title(message_config, action):
     if not title and isinstance(keywords_found, list):
         if len(keywords_found) == 1:
             keyword = keywords_found[0]
-            title = f"'{keyword}' found in {monitored_object_name}"
+            title = f"'{keyword}' found in {entity_name}"
         elif len(keywords_found) == 2:
             joined_keywords = ' and '.join(f"'{word}'" for word in keywords_found)
-            title = f"{joined_keywords} found in {monitored_object_name}"
+            title = f"{joined_keywords} found in {entity_name}"
         elif len(keywords_found) > 2:
             joined_keywords = ', '.join(f"'{word}'" for word in keywords_found)
-            title = f"The following keywords were found in {monitored_object_name}: {joined_keywords}"
+            title = f"The following keywords were found in {entity_name}: {joined_keywords}"
 
     if action and not title:
         action, success = action
         if success:
-            title = f"{monitored_object_name} was {'stopped' if action == 'stop' else 'restarted'}! - " + title
+            title = f"{entity_name} was {'stopped' if action == 'stop' else 'restarted'}! - " + title
         else:
-            title = f"Failed to {'stop' if action == 'stop' else 'restart'} {monitored_object_name}!" + title
+            title = f"Failed to {'stop' if action == 'stop' else 'restart'} {entity_name}!" + title
 
     if not title:
-        title = f"{monitored_object_name}: {keywords_found}"
+        title = f"{entity_name}: {keywords_found}"
 
     return title
 

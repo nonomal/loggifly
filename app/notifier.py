@@ -194,7 +194,7 @@ def send_webhook(json_data, webhook_config):
 
 
 def send_notification(config: GlobalConfig, 
-                      monitored_object_name, 
+                      entity_name, 
                       title=None, 
                       message=None,
                       message_config=None, 
@@ -223,7 +223,7 @@ def send_notification(config: GlobalConfig,
     if (webhook_config and webhook_config.get("url")):
         keywords = message_config.get("keywords_found", None) if message_config else None
         json_data = {
-            monitor_type: monitored_object_name,
+            monitor_type: entity_name,
             "keywords": keywords,
             "title": title,
             "message": message,

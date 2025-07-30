@@ -39,7 +39,7 @@ def create_handle_signal(monitor_instances, config, config_observer):
     def handle_signal(signum, frame):
         if not config.settings.disable_shutdown_message:
             send_notification(config=config,
-                            monitored_object_name= "LoggiFly",
+                            entity_name= "LoggiFly",
                             title="LoggiFly", 
                             message="Shutting down")
         if config_observer is not None:
@@ -97,7 +97,7 @@ class ConfigHandler(FileSystemEventHandler):
         if self.config.settings.disable_config_reload_message is False:
             send_notification(
                 config=self.config,
-                monitored_object_name="LoggiFly",
+                entity_name="LoggiFly",
                 title="LoggiFly: The config file was reloaded",
                 message=message
             )
@@ -255,7 +255,7 @@ def start_loggifly():
             except Exception as e:
                 hostname = f"Host-{number}"
                 logging.warning(
-                    f"Could not get hostname for {host}. LoggiFly will call this host '{hostname}' in notifications and logging to differentiate it."
+                    f"Could not get hostname for {host}. LoggiFly will call this host '{hostname}' in notifications and logging to differentiate it from other hosts."
                     f"\nThis may occur if using a Socket Proxy without 'INFO=1', or you can set a label in DOCKER_HOST as 'tcp://host:2375|label'."
                     f"\nError details: {e}")    
                                 
@@ -284,7 +284,7 @@ def start_loggifly():
         if config.settings.disable_start_message is False:
             send_notification(
                 config=config,
-                monitored_object_name="LoggiFly",
+                entity_name="LoggiFly",
                 title="LoggiFly started",
                 message=message
             )

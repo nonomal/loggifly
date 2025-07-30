@@ -2,7 +2,7 @@ import os
 import logging
 import copy
 import yaml
-
+import traceback
 from .config_model import (
     GlobalConfig,
     SwarmServiceConfig,
@@ -10,6 +10,8 @@ from .config_model import (
     ValidationError,
     SecretStr
 )
+from constants import MonitorType
+
 logging.getLogger(__name__)
 
 """
@@ -153,46 +155,27 @@ def load_config(official_path="/config/config.yaml"):
     # Validate the merged configuration with Pydantic
     config = GlobalConfig.model_validate(merged_config)
 
-    config_dict = prettify_config(config.model_dump(
-                                exclude_none=True, 
-                                exclude_defaults=False, 
-                                exclude_unset=False,
-                                )
-                            )
-    yaml_output = yaml.dump(config_dict, default_flow_style=False, sort_keys=False, indent=4)
+    yaml_output = get_pretty_yaml_config(config)
     logging.info(f"\n ------------- CONFIG ------------- \n{yaml_output}\n ----------------------------------")
 
     return config, config_path
 
-
-
-
-
-    
-def add_to_config(config, monitor_type, name, config_dict):
+def validate_entity_config(monitor_type, config_dict):
     try:
-        new_config = None
-        if monitor_type == "swarm" and name not in config.swarm_services:
-            new_config = SwarmServiceConfig.model_validate(config_dict)
-            config.swarm_services[name] = new_config
-        elif monitor_type == "container" and name not in config.containers:
-            new_config = ContainerConfig.model_validate(config_dict)
-            config.containers[name] = new_config
-        if new_config:
-            pretty_config = prettify_config(new_config.model_dump(
-                exclude_none=True, 
-                exclude_defaults=False, 
-                exclude_unset=False,
-            ))
-            return pretty_config
-        return None
+        if monitor_type == MonitorType.SWARM:
+            return SwarmServiceConfig.model_validate(config_dict)
+        elif monitor_type == MonitorType.CONTAINER:
+            return ContainerConfig.model_validate(config_dict)
     except ValidationError as e:
-        logging.error(f"Error adding to config: {e}")
+        type_str = monitor_type.value if hasattr(monitor_type, "value") else monitor_type
+        logging.error(f"Error validating {type_str} config: {e}")
+        return None
     except Exception as e:
-        logging.error(f"Unexpected error adding to config: {e}")
-    return None
+        type_str = monitor_type.value if hasattr(monitor_type, "value") else monitor_type
+        logging.error(f"Unexpected error validating {type_str} config: {e}")
+        return None
 
-
+        
 def format_pydantic_error(e: ValidationError) -> str:
     """Format Pydantic validation errors for user-friendly display."""
     error_messages = []
@@ -202,6 +185,16 @@ def format_pydantic_error(e: ValidationError) -> str:
         msg = msg.split("[")[0].strip()
         error_messages.append(f"Field '{location}': {msg}")
     return "\n".join(error_messages)
+
+
+def get_pretty_yaml_config(config):
+    config_dict = prettify_config(config.model_dump(
+                            exclude_none=True, 
+                            exclude_defaults=False, 
+                            exclude_unset=False,
+                            )
+                        )
+    return yaml.dump(config_dict, default_flow_style=False, sort_keys=False, indent=4)
 
 
 def prettify_config(data):

@@ -10,26 +10,6 @@ from enum import Enum
 from typing import List, Optional, Union, ClassVar
 import logging
 
-def validate_priority(v):
-    """
-    Validate and normalize the priority value for notifications. Accepts both string and integer representations.
-    Returns a valid priority or the default if invalid.
-    """
-    if isinstance(v, str):
-        try:
-            v = int(v)
-        except ValueError:
-            pass
-    if isinstance(v, int):
-        if not 1 <= int(v) <= 5:
-            logging.warning(f"Error in config for ntfy.priority. Must be between 1-5, '{v}' is not allowed. Using default: '3'")
-            return 3
-    if isinstance(v, str):
-        options = ["max", "urgent", "high", "default", "low", "min"]
-        if v not in options:
-            logging.warning(f"Error in config for ntfy.priority:'{v}'. Only 'max', 'urgent', 'high', 'default', 'low', 'min' are allowed. Using default: '3'")
-            return 3
-    return v
 
 class BaseConfigModel(BaseModel):
     model_config = ConfigDict(
@@ -256,3 +236,25 @@ class GlobalConfig(BaseConfigModel):
         if not all_keywords:
             raise ValueError("No keywords configured. You have to set keywords either per container or globally.")
         return self
+
+
+def validate_priority(v):
+    """
+    Validate and normalize the priority value for notifications. Accepts both string and integer representations.
+    Returns a valid priority or the default if invalid.
+    """
+    if isinstance(v, str):
+        try:
+            v = int(v)
+        except ValueError:
+            pass
+    if isinstance(v, int):
+        if not 1 <= int(v) <= 5:
+            logging.warning(f"Error in config for ntfy.priority. Must be between 1-5, '{v}' is not allowed. Using default: '3'")
+            return 3
+    if isinstance(v, str):
+        options = ["max", "urgent", "high", "default", "low", "min"]
+        if v not in options:
+            logging.warning(f"Error in config for ntfy.priority:'{v}'. Only 'max', 'urgent', 'high', 'default', 'low', 'min' are allowed. Using default: '3'")
+            return 3
+    return v

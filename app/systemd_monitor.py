@@ -9,7 +9,8 @@ import traceback
 
 from line_processor import LogProcessor
 from config.config_model import GlobalConfig
-from utils.utils import generate_message
+from utils import generate_message
+from constants import MonitorType
 
 class UnitContext:
     def __init__(self, unit_name, filters, processor: LogProcessor, hosts=None):
@@ -95,10 +96,10 @@ class SystemdMonitor():
             else:
                 processor = LogProcessor(self.logger, 
                                 self.config,
-                                monitored_object_name=unit_name,
+                                entity_config=self.config.systemd_services[unit_name],
+                                entity_name=unit_name,
                                 monitor_instance=self,
-                                monitor_type="systemd",
-                                config_key=unit_name
+                                monitor_type=MonitorType.SYSTEMD
                                 )   
                 self.registry.add(UnitContext(unit_name, applied_filters, processor, hosts))
             
@@ -131,12 +132,16 @@ class SystemdMonitor():
         
     def reload_config(self, config: GlobalConfig):
         self.logger.info("Reloading systemd monitor configuration.")
+        self.config = config if config else self.config
+        if not self.config.systemd_services:
+            self.logger.warning("No systemd services configured for monitoring. Please check your config.yaml.")
+            return ""
         selected_units = [u for u in config.systemd_services] if config.systemd_services else []
         try: 
             for unit_context in self.registry.get_all_units():
                 if unit_context.unit_name not in selected_units:
                     continue
-                unit_context.processor.load_config_variables(self.config)
+                unit_context.processor.load_config_variables(self.config, self.config.systemd_services[unit_context.unit_name])
 
             # Monitor new services and stop monitoring those not in the new config
             self.reader.flush_matches()  # Clear existing matches
@@ -164,13 +169,10 @@ class SystemdMonitor():
         return f"{timestamp} {entry.get('_HOSTNAME', '')} {unit}[{entry.get('_PID', '')}]: {entry.get('MESSAGE', '')}"
 
     def process_entry(self, entry):
-        """Format the log message from a journal entry."""
-        if os.environ.get("DEBUG_SYSTEMD_LOGS", "").strip().lower() == "true":
-            self.logger.debug(self.format_entry(entry))
-
         for unit_context in self.registry.get_all_units():
-            if all(entry.get(key) == value for key, value in unit_context.filter_dict.items()):
-                self.logger.debug(f"Processing entry for unit {unit_context.unit_name} with filters {unit_context.filter_dict}:\n{entry}")
+            if all(str(entry.get(key, '')).strip() == value for key, value in unit_context.filter_dict.items()):
+                if os.environ.get("DEBUG_SYSTEMD_LOGS", "").strip().lower() == "true":
+                    self.logger.debug(f"Processing entry for unit {unit_context.unit_name} with filters {unit_context.filter_dict}:\n{self.format_entry(entry)}")
                 if unit_context.hosts and (hostname := entry.get('_HOSTNAME')) and hostname not in unit_context.hosts:
                     self.logger.debug(f"Skipping entry for unit {unit_context.unit_name} because hostname {hostname} is not in {unit_context.hosts}")
                     return
@@ -180,7 +182,7 @@ class SystemdMonitor():
                 processor.process_line(message)
                 break
         else:
-            return
+            self.logger.debug(f"No unit context found for entry:\n{entry}")
         
     def _monitor_systemd_journal(self):
         def systemd_monitor():
@@ -236,18 +238,18 @@ class SystemdMonitor():
         self.process.terminate()
         self.shutdown_journal_remote_service()
 
-    def tail_logs(self, monitored_object_name, monitor_type="systemd", lines=10, journal_path="/var/log/journal/remote/"):
+    def tail_logs(self, entity_name, monitor_type=MonitorType.SYSTEMD, lines=10, journal_path="/var/log/journal/remote/"):
         r = None
         try:
             self.logger.debug(f"Attempting to read the last {lines} entries from the journal at {journal_path}")
             r = journal.Reader(path=journal_path)
             r.data_threshold = 64 * 1024 * 1024
-            if unit_context := self.registry.get_by_unit_name(monitored_object_name):
+            if unit_context := self.registry.get_by_unit_name(entity_name):
                 for filter, value in unit_context.filter_dict.items():
                     r.add_match(f"{filter}={value}")
             else:
-                self.logger.warning(f"No unit context found for {monitored_object_name}. Using default filter.")
-                r.add_match(_SYSTEMD_UNIT=monitored_object_name)
+                self.logger.warning(f"No unit context found for {entity_name}. Using default filter.")
+                r.add_match(_SYSTEMD_UNIT=entity_name)
             r.seek_tail()
             entries = []
             for _ in range(lines):
@@ -259,7 +261,7 @@ class SystemdMonitor():
             log_tail = "\n".join(list(reversed(entries)))
             return log_tail
         except OSError as e:
-            self.logger.error(f"Can not tail logs for systemd service '{monitored_object_name}': Journal access error: {str(e)}")
+            self.logger.error(f"Can not tail logs for systemd service '{entity_name}': Journal access error: {str(e)}")
             return []
         except Exception as e:
             self.logger.error(f"Can not tail logs for systemd service: Error: {str(e)}")
