@@ -5,35 +5,29 @@ FROM python:${PYTHON_VERSION}-slim AS builder
 
 WORKDIR /app
 
-# Install build tools und systemd-dev libs
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    pkg-config \
-    libsystemd-dev \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt .
-
 RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
 
-# --- Final Stage ---
-FROM python:${PYTHON_VERSION}-slim AS final
+# --- Final Stage: distroless ---
+FROM gcr.io/distroless/python3-debian12
 
 WORKDIR /app
+USER 1000:1000
 
-RUN apt-get update && apt-get install -y \
-    systemd-journal-remote \
-    && rm -rf /var/lib/apt/lists/*
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages
 
 COPY --from=builder /install /usr/local
 
-COPY entrypoint.sh .
-COPY app/ .
-
-
 LABEL org.opencontainers.image.source="https://github.com/clemcer/loggifly"
 
-RUN mkdir -p /tmp
-RUN mkdir -p /var/log/journal/remote
+COPY app/line_processor.py /app/
+COPY app/notifier.py /app/
+COPY app/docker_monitor.py /app/
+COPY app/app.py /app/
+COPY app/constants.py /app/
+COPY app/config/ /app/config/
 
-ENTRYPOINT ["/bin/sh", "./entrypoint.sh"]
+ENTRYPOINT ["python", "app.py"]
+    

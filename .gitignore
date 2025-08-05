@@ -7,4 +7,5 @@ config.yaml
 __pycache__
 node_modules
 cache
-notest.txt
+notes.txt
+compose.dev.yaml

@@ -4,8 +4,6 @@ from enum import Enum
 class MonitorType(Enum):
     CONTAINER = "container"
     SWARM = "swarm"
-    SYSTEMD = "systemd"
-
 class MonitorDecision(Enum):
     MONITOR = "monitor"
     SKIP = "skip"

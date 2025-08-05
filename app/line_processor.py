@@ -46,9 +46,8 @@ class LogProcessor:
         self.hostname = hostname    # Hostname for multi-client setups; empty if single client
         self.container_stop_event = container_stop_event
         self.entity_name = entity_name
-        self.monitor_type = monitor_type # container, swarm, systemd
-        self.monitor_instance = monitor_instance # DockerMonitor or SystemdMonitor (the instance from which the processor is called)
-        # self.config_key = config_key if config_key else entity_name # key in config.yaml
+        self.monitor_type = monitor_type # container, swarm
+        self.monitor_instance = monitor_instance # DockerMonitor instance from which the processor is called
         self.entity_config = entity_config
 
         self.patterns = []
@@ -68,7 +67,7 @@ class LogProcessor:
 
         self.load_config_variables(config, entity_config)
         # If multi-line mode is on, find starting pattern in logs
-        if self.multi_line_mode is True and self.monitor_type != MonitorType.SYSTEMD:
+        if self.multi_line_mode is True:
             if self.valid_pattern is False:
                 log_tail = self.monitor_instance.tail_logs(entity_name=self.entity_name, 
                                                             monitor_type=self.monitor_type, 
@@ -131,7 +130,7 @@ class LogProcessor:
             "hide_regex_in_title": self.entity_config.hide_regex_in_title if self.entity_config.hide_regex_in_title is not None else self.config.settings.hide_regex_in_title,
         }
 
-        self.multi_line_mode = False if self.monitor_type == MonitorType.SYSTEMD else self.config.settings.multi_line_entries
+        self.multi_line_mode = self.config.settings.multi_line_entries
         self.action_cooldown= self.entity_config.action_cooldown or self.config.settings.action_cooldown or 300
         
         self.last_action_time = None
@@ -226,7 +225,7 @@ class LogProcessor:
             self.flush_thread_stopped.set()
             self.logger.debug(f"Flush Thread stopped for Container {self.entity_name}")
 
-        if self.monitor_type != MonitorType.SYSTEMD and self.flush_thread_stopped.is_set():
+        if self.flush_thread_stopped.is_set():
             self.flush_thread = Thread(target=check_flush, daemon=True)
             self.flush_thread.start()
 
@@ -426,7 +425,6 @@ def get_notification_title(message_config, action):
                 "container": entity_name if monitor_type == MonitorType.CONTAINER else "",
                 "keywords": keywords, 
                 "keyword": keywords, 
-                "systemd_service": entity_name if monitor_type == MonitorType.SYSTEMD else "", 
                 "swarm_service": entity_name if monitor_type == MonitorType.SWARM else ""
             }
             title = template.format(**template_fields)

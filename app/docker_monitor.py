@@ -13,7 +13,6 @@ from datetime import datetime
 from notifier import send_notification
 from line_processor import LogProcessor
 from config.load_config import validate_entity_config, get_pretty_yaml_config
-from utils import generate_message
 from constants import (
     MonitorType, 
     MonitorDecision, 
@@ -405,22 +404,25 @@ class DockerLogMonitor:
             self.logger.error(f"Error handling config changes: {e}")
         return ""
 
-
     def _start_message(self):
         # Compose and log/send a summary message about monitored containers and services
         if self.hostname:
             message = f"[{self.hostname}]\n"
         else:
             message = ""
-        if self.selected_containers:
-            monitored_container_names = [c.entity_name for c in self._registry.get_actively_monitored(monitor_type=MonitorType.CONTAINER)]
+        monitored_container_names = [c.entity_name for c in self._registry.get_actively_monitored(monitor_type=MonitorType.CONTAINER)]
+        if self.selected_containers or monitored_container_names:
             unmonitored_containers = [c for c in self.selected_containers if c not in monitored_container_names]
-            message += generate_message(monitored_container_names, unmonitored_containers, "Containers")
-        if self.selected_swarm_services: # self.swarm_mode:
-            actively_monitored_swarm = [context for context in self._registry.get_actively_monitored(monitor_type=MonitorType.SWARM)]
+            message += "These containers are being monitored:\n" + "\n - ".join(monitored_container_names)
+            if unmonitored_containers:
+                message += "\n\nThese containers are not running:\n" + "\n - ".join(unmonitored_containers)
+        actively_monitored_swarm = [context for context in self._registry.get_actively_monitored(monitor_type=MonitorType.SWARM)]
+        if self.selected_swarm_services or actively_monitored_swarm:
             unmonitored_swarm_services = [s for s in self.selected_swarm_services if s not in [s.config_key for s in actively_monitored_swarm]]
             monitored_swarm_service_instances = [s.entity_name for s in actively_monitored_swarm]
-            message += "\n\n" + generate_message(monitored_swarm_service_instances, unmonitored_swarm_services, "Swarm Services")
+            message += "\n\nThese Swarm Containers are being monitored:\n" + "\n - ".join(monitored_swarm_service_instances)
+            if unmonitored_swarm_services:
+                message += "\n\nThese Swarm Services are not running:\n" + "\n - ".join(unmonitored_swarm_services)
         return message
 
     def _handle_error(self, error_count, last_error_time, container_name=None):
