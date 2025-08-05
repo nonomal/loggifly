@@ -9,6 +9,7 @@ from pydantic import (
 from enum import Enum
 from typing import List, Optional, Union, ClassVar
 import logging
+import re
 
 
 class BaseConfigModel(BaseModel):
@@ -95,13 +96,21 @@ class KeywordItem(ModularSettings):
     json_template: Optional[str] = None
     action: Optional[ActionEnum] = None
 
+class KeywordGroup(ModularSettings):
+    """
+    Model for a group of keywords.
+    """
+    keyword_group: List[Union[str, KeywordItem, RegexItem]] = []
+    json_template: Optional[str] = None
+    action: Optional[ActionEnum] = None
+
 class KeywordBase(BaseModel):
     """
     Base model for keyword lists, with pre-validation to handle legacy and misconfigured entries.
     """
     _DISALLOW_ACTION: ClassVar[bool] = False
 
-    keywords: List[Union[str, KeywordItem, RegexItem]] = []
+    keywords: List[Union[str, KeywordItem, RegexItem, KeywordGroup]] = []
 
     @model_validator(mode="before")
     def int_to_string(cls, data: dict) -> dict:
@@ -113,8 +122,14 @@ class KeywordBase(BaseModel):
             for item in data["keywords"]:
                 if isinstance(item, dict):
                     keys = list(item.keys())
-                    if "keyword" not in item and "regex" not in item:
-                        logging.warning(f"Ignoring Error in config in field 'keywords': '{item}'. You have to set 'keyword' or 'regex' as a key.")
+                    if "keyword" not in item and "regex" not in item and "keyword_group" not in item:
+                        logging.warning(f"Ignoring Error in config in field 'keywords': '{item}'. You have to set 'keyword', 'regex' or 'keyword_group' as a key.")
+                        continue
+                    if "keyword_group" in item and not isinstance(item["keyword_group"], list):
+                        logging.warning(f"Ignoring Error in config in field 'keywords': '{item}'. You have to set 'keyword_group' as a list.")
+                        continue
+                    if "regex" in item and not validate_regex(item["regex"]):
+                        logging.warning(f"Ignoring Error in config in field 'keywords': '{item}'. Invalid regex.")
                         continue
                     for key in keys:
                         if isinstance(item[key], int):
@@ -258,3 +273,11 @@ def validate_priority(v):
             logging.warning(f"Error in config for ntfy.priority:'{v}'. Only 'max', 'urgent', 'high', 'default', 'low', 'min' are allowed. Using default: '3'")
             return 3
     return v
+
+def validate_regex(v):
+    try:
+        re.compile(v)
+    except re.error as e:
+        logging.warning(f"Error in config for regex: '{v}'. Invalid regex. {e}")
+        return False 
+    return True

@@ -19,7 +19,7 @@ from config.load_config import load_config, format_pydantic_error
 from docker_monitor import DockerLogMonitor
 from notifier import send_notification
 
-from systemd_monitor import SystemdMonitor
+# from systemd_monitor import SystemdMonitor
 
 logging.basicConfig(
     level="INFO",
@@ -266,28 +266,28 @@ def start_loggifly():
 
     monitor_instances = [docker_hosts[host]["monitor"] for host in docker_hosts.keys()]
     
-    if os.environ.get("ENABLE_JOURNAL_REMOTE", "").strip().lower() == "true":
-        logging.info("Systemd journal remote monitoring enabled via environment variable.")
-        if config.systemd_services:
-            logging.debug("Trying to start systemd journal monitoring...")
-            systemd_monitor = SystemdMonitor(config)
-            start_messages.append(systemd_monitor.start())
-            monitor_instances.append(systemd_monitor)
-        else:  
-            logging.warning("No systemd services configured in config.yaml. Systemd journal monitoring will not start.")
+    # if os.environ.get("ENABLE_JOURNAL_REMOTE", "").strip().lower() == "true":
+    #     logging.info("Systemd journal remote monitoring enabled via environment variable.")
+    #     if config.systemd_services:
+    #         logging.debug("Trying to start systemd journal monitoring...")
+    #         systemd_monitor = SystemdMonitor(config)
+    #         start_messages.append(systemd_monitor.start())
+    #         monitor_instances.append(systemd_monitor)
+    #     else:  
+    #         logging.warning("No systemd services configured in config.yaml. Systemd journal monitoring will not start.")
             
-        message_line_break = "\n\n" + "-" * 60 + "\n\n"
-        message = message_line_break.join(start_messages) if start_messages else "LoggiFly started without mointoring anything."
-        message = "-" * 60 + "\n" + message + "\n\n" + "-" * 60
+    message_line_break = "\n\n" + "-" * 60 + "\n\n"
+    message = message_line_break.join(start_messages) if start_messages else "LoggiFly started without mointoring anything."
+    message = "-" * 60 + "\n" + message + "\n\n" + "-" * 60
 
-        logging.info(f"LoggiFly started.\n{message}")
-        if config.settings.disable_start_message is False:
-            send_notification(
-                config=config,
-                entity_name="LoggiFly",
-                title="LoggiFly started",
-                message=message
-            )
+    logging.info(f"LoggiFly started.\n{message}")
+    if config.settings.disable_start_message is False:
+        send_notification(
+            config=config,
+            entity_name="LoggiFly",
+            title="LoggiFly started",
+            message=message
+        )
     # Start config observer to catch config.yaml changes
     if config.settings.reload_config and isinstance(path, str) and os.path.exists(path):
         config_observer = start_config_watcher(monitor_instances, config, path)

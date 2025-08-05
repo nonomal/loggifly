@@ -9,7 +9,7 @@ import traceback
 import threading
 from threading import Thread, Lock
 from notifier import send_notification
-from config.config_model import GlobalConfig, KeywordItem, RegexItem
+from config.config_model import GlobalConfig, KeywordItem, RegexItem, KeywordGroup
 from constants import (
     MonitorType, 
     COMPILED_STRICT_PATTERNS, 
@@ -97,6 +97,10 @@ class LogProcessor:
                 returned_keywords.append((item.model_dump()))
             elif isinstance(item, RegexItem):
                 returned_keywords.append((item.model_dump()))
+            elif isinstance(item, KeywordGroup):
+                keyword_dict = item.model_dump()
+                keyword_dict["keyword_group"] = tuple(keyword_dict["keyword_group"])
+                returned_keywords.append(keyword_dict)
             elif isinstance(item, str):
                 returned_keywords.append(({"keyword": item}))
             elif isinstance(item, dict) and ("keyword" in item or "regex" in item):
@@ -109,6 +113,7 @@ class LogProcessor:
         Called on initialization and when reloading config.
         """
         self.config = config
+        self.entity_config = entity_config
         config_global_keywords = self.config.global_keywords
         self.keywords = self._get_keywords(config_global_keywords.keywords)            
         if not self.entity_config:
@@ -131,8 +136,11 @@ class LogProcessor:
         
         self.last_action_time = None
         for keyword_dict in self.keywords:
-            keyword = keyword_dict.get("keyword") or keyword_dict.get("regex")
-            self.time_per_keyword[keyword] = 0
+            if (keyword := keyword_dict.get("keyword") or keyword_dict.get("regex")):
+                self.time_per_keyword[keyword] = 0
+            elif "keyword_group" in keyword_dict:
+                for keyword in keyword_dict.get("keyword_group"):
+                    self.time_per_keyword[keyword] = 0
 
 
     def get_message_config(self, keyword_message_config):
@@ -271,12 +279,18 @@ class LogProcessor:
                     self.time_per_keyword[regex] = time.time()
                     hide_pattern = keyword_dict.get("hide_regex_in_title") if keyword_dict.get("hide_regex_in_title") else self.container_message_config["hide_regex_in_title"]
                     return "Regex-Pattern" if hide_pattern else f"Regex: {regex}"
-        else:
+        elif "keyword" in keyword_dict:
             keyyword = keyword_dict.get("keyword")
             if ignore_keyword_time or time.time() - self.time_per_keyword.get(keyyword, 0) >= int(notification_cooldown):
                 if keyyword.lower() in log_line.lower():
                     self.time_per_keyword[keyyword] = time.time()
                     return keyyword
+        elif "keyword_group" in keyword_dict:
+            keyword_group = keyword_dict.get("keyword_group")
+            if ignore_keyword_time or time.time() - self.time_per_keyword.get(keyword_group, 0) >= int(notification_cooldown):
+                if all(keyword.lower() in log_line.lower() for keyword in keyword_group):
+                    self.time_per_keyword[keyword_group] = time.time()
+                    return keyword_group
         return None
 
     def _search_and_send(self, log_line):
@@ -339,8 +353,13 @@ class LogProcessor:
         title = get_notification_title(message_config, action)
         file_path = None
         if attach_logfile:
-            file_path = self._log_attachment(message_config["attachment_lines"])
-            message_config["file_path"] = file_path
+            if (result := self._log_attachment(message_config["attachment_lines"])):
+                attachment, file_name = result
+                message_config["attachment"] = attachment
+                message_config["file_name"] = file_name
+            else:
+                self.logger.error(f"Could not create log attachment file for Container {self.entity_name}")
+                return
         send_notification(self.config,
                           entity_name=self.entity_name,
                           title=title,
@@ -361,36 +380,16 @@ class LogProcessor:
         Write the last N lines of container logs to a temporary file for notification attachment.
         Returns the file path or None on error.
         """
-        base_name = f"last_{number_attachment_lines}_lines_from_{self.entity_name}.log"
-        folder = "/tmp/"
-
-        def find_available_name(filename, number=1):
-            """
-            Generate a unique file name if a file with the base name already exists in case of many notifications at same time.
-            """
-            new_name = f"{filename.rsplit('.', 1)[0]}_{number}.log"
-            path = folder + new_name
-            if os.path.exists(path):
-                return find_available_name(filename, number + 1)
-            return path
-    
-        if os.path.exists(base_name):
-            file_path = find_available_name(base_name)
-        else:
-            file_path = folder + base_name
+        file_name = f"last_{number_attachment_lines}_lines_from_{self.entity_name}.log"
         try:
-            os.makedirs("/tmp", exist_ok=True)
             log_tail = self.monitor_instance.tail_logs(entity_name=self.entity_name, 
                                                        monitor_type=self.monitor_type, 
                                                        lines=number_attachment_lines)
             if log_tail:
-                with open(file_path, "w") as file:
-                    file.write(log_tail)
-                    logging.debug(f"Wrote file: {file_path}")
-                    return file_path
+                return log_tail, file_name
         except Exception as e:
             self.logger.error(f"Could not create log attachment file for Container {self.entity_name}: {e}")
-            return None
+            return None, None
 
     def _container_action(self, action):
         """

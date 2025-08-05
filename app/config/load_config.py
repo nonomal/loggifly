@@ -154,7 +154,6 @@ def load_config(official_path="/config/config.yaml"):
     merged_config = convert_legacy_formats(merged_config)
     # Validate the merged configuration with Pydantic
     config = GlobalConfig.model_validate(merged_config)
-
     yaml_output = get_pretty_yaml_config(config)
     logging.info(f"\n ------------- CONFIG ------------- \n{yaml_output}\n ----------------------------------")
 
@@ -175,39 +174,27 @@ def validate_entity_config(monitor_type, config_dict):
         logging.error(f"Unexpected error validating {type_str} config: {e}")
         return None
 
-        
-def format_pydantic_error(e: ValidationError) -> str:
-    """Format Pydantic validation errors for user-friendly display."""
-    error_messages = []
-    for error in e.errors():
-        location = ".".join(map(str, error["loc"]))
-        msg = error["msg"]
-        msg = msg.split("[")[0].strip()
-        error_messages.append(f"Field '{location}': {msg}")
-    return "\n".join(error_messages)
-
-
-def get_pretty_yaml_config(config):
-    config_dict = prettify_config(config.model_dump(
-                            exclude_none=True, 
-                            exclude_defaults=False, 
-                            exclude_unset=False,
-                            )
-                        )
+def get_pretty_yaml_config(config, top_level_key=None):
+    config_dict = prettify_config_dict(config.model_dump(
+        exclude_none=True, 
+        exclude_defaults=False, 
+        exclude_unset=False,
+    ))
+    if top_level_key:
+        config_dict = {top_level_key: config_dict}
     return yaml.dump(config_dict, default_flow_style=False, sort_keys=False, indent=4)
 
-
-def prettify_config(data):
+def prettify_config_dict(data):
     """Recursively format config dict for display, masking secrets and ordering keys for readability."""
     if isinstance(data, dict):
         priority_keys = [k for k in ("regex", "keyword") if k in data]
         if priority_keys:
             rest_keys = [k for k in data.keys() if k not in priority_keys]
             ordered_dict = {k: data[k] for k in priority_keys + rest_keys}
-            return {k: prettify_config(v) for k, v in ordered_dict.items()}
-        return {k: prettify_config(v) for k, v in data.items()}
+            return {k: prettify_config_dict(v) for k, v in ordered_dict.items()}
+        return {k: prettify_config_dict(v) for k, v in data.items()}
     elif isinstance(data, list):
-        return [prettify_config(item) for item in data]
+        return [prettify_config_dict(item) for item in data]
     elif isinstance(data, SecretStr):
         return "**********"  
     else:
@@ -261,3 +248,13 @@ def convert_legacy_formats(config):
                             elif isinstance(keyword, str):
                                 container_config["keywords"].append({"keyword": keyword, "action": action})
     return config_copy
+
+def format_pydantic_error(e: ValidationError) -> str:
+    """Format Pydantic validation errors for user-friendly display."""
+    error_messages = []
+    for error in e.errors():
+        location = ".".join(map(str, error["loc"]))
+        msg = error["msg"]
+        msg = msg.split("[")[0].strip()
+        error_messages.append(f"Field '{location}': {msg}")
+    return "\n".join(error_messages)
