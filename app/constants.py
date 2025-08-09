@@ -58,6 +58,7 @@ FLEX_PATTERNS = [
 COMPILED_STRICT_PATTERNS = [re.compile(pattern, re.ASCII) for pattern in STRICT_PATTERNS]
 COMPILED_FLEX_PATTERNS = [re.compile(pattern, re.ASCII) for pattern in FLEX_PATTERNS]
 
-# Container action constants
-ACTION_STOP = "stop"
-ACTION_RESTART = "restart" 
+class Actions(Enum):
+    STOP = "stop"
+    RESTART = "restart"
+    START = "start"

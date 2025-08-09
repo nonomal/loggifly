@@ -38,12 +38,8 @@ This setting can also be configured per container and per keyword.
 
 :::info
 These are the keys that can be inserted into the template:
-- `keyword` / `keywords`: _The keyword(s) that were found in a log line_ 
+- `keyword` / `keywords`: _The keyword(s) that were found in a log line (they have the same value)_
 - `container`: _The name of the container in which the keywords have been found_
-- `swarm_service`: _The name of the Docker Swarm service in which the keywords have been found_
-- `systemd_service`: _The name of the systemd service in which the keywords have been found_
-
-`keyword` and `keywords` have the same value and `container`, `swarm_service` and `systemd_service` have the same value, so you can use them interchangeably.
 :::
 
 Here is an example:

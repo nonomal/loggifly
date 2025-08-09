@@ -64,6 +64,7 @@ def get_apprise_url(config, message_config, container_config):
     container_config = container_config.model_dump(exclude_none=True) if container_config else {}
     message_config = message_config if message_config else {}
 
+
     if message_config.get("apprise_url"):
         apprise_url = message_config.get("apprise_url")
     elif container_config.get("apprise_url"):
@@ -98,7 +99,7 @@ def get_webhook_config(config, message_config, container_config):
     return webhook_config
 
 
-def send_apprise_notification(url, message, title, attachment=None, file_name=None):
+def send_apprise_notification(url, message, title, attachment=None):
     """
     Send a notification using Apprise.
     Optionally attaches a file. Message is truncated if too long.
@@ -108,11 +109,12 @@ def send_apprise_notification(url, message, title, attachment=None, file_name=No
     try:
         apobj = apprise.Apprise()
         apobj.add(url)
-        if attachment and file_name:
+        if attachment and (file_content := attachment.get("content", "")):
+            file_name = attachment.get("file_name", "attachment.txt")
             # /dev/shm works even when the container is read_only
             file_path = os.path.join("/dev/shm", file_name)
             with open(file_path, "w") as tmp_file:
-                tmp_file.write(attachment)
+                tmp_file.write(file_content)
                 tmp_file.flush()
                 os.fsync(tmp_file.fileno())
                 result = apobj.notify(
@@ -142,7 +144,7 @@ def send_ntfy_notification(ntfy_config, message, title, attachment=None, file_na
     """
     message = ("This message had to be shortened: \n" if len(message) > 3900 else "") + message[:3900]
     headers = {
-        "Title": title,
+        "Title": title.encode("latin-1", errors="ignore").decode("latin-1"),
         "Tags": f"{ntfy_config['tags']}",
         "Icon": "https://raw.githubusercontent.com/clemcer/loggifly/main/images/icon.png",
         "Priority": f"{ntfy_config['priority']}"
@@ -151,10 +153,8 @@ def send_ntfy_notification(ntfy_config, message, title, attachment=None, file_na
         headers["Authorization"] = f"{ntfy_config.get('authorization')}"
 
     try:
-        if attachment:
-            file= attachment.encode("utf-8")
-            file_name = file_name
-            headers["Filename"] = file_name
+        if attachment and (file := attachment.get("content", "").encode("utf-8")):
+            headers["Filename"] = attachment.get("file_name", "attachment.txt")
             # When attaching a file the message can not be passed normally.
             # So if the message is short, include it as query param, else omit it
             if len(message) < 199:
@@ -206,10 +206,11 @@ def send_webhook(json_data, webhook_config):
 
 def send_notification(config: GlobalConfig, 
                       entity_name, 
-                      title=None, 
-                      message=None,
+                      title, 
+                      message,
                       message_config=None, 
-                      container_config=None, 
+                      container_config=None,
+                      attachment=None,
                       hostname=None):
     """
     Dispatch a notification using ntfy, Apprise, and/or webhook based on configuration.
@@ -220,16 +221,14 @@ def send_notification(config: GlobalConfig,
 
     # If multiple hosts are set, prepend hostname to title
     title = f"[{hostname}] - {title}" if hostname else title
-    attachment = message_config.get("attachment") if message_config else None
-    file_name = message_config.get("file_name") if message_config else None
 
     ntfy_config = get_ntfy_config(config, message_config, container_config)
     if (ntfy_config and ntfy_config.get("url") and ntfy_config.get("topic")):
-        send_ntfy_notification(ntfy_config, message=message, title=title, attachment=attachment, file_name=file_name)
+        send_ntfy_notification(ntfy_config, message=message, title=title, attachment=attachment)
 
     apprise_url = get_apprise_url(config, message_config, container_config)
     if apprise_url:
-        send_apprise_notification(apprise_url, message=message, title=title, attachment=attachment, file_name=file_name)
+        send_apprise_notification(apprise_url, message=message, title=title, attachment=attachment)
 
     webhook_config = get_webhook_config(config, message_config, container_config)
     if (webhook_config and webhook_config.get("url")):
@@ -242,4 +241,6 @@ def send_notification(config: GlobalConfig,
             "host": hostname
         }
         send_webhook(json_data, webhook_config)
+    
+
 

@@ -7,6 +7,7 @@ import os
 import random
 import re
 import requests
+from typing import Optional
 import docker
 import docker.errors
 from datetime import datetime
@@ -14,10 +15,10 @@ from notifier import send_notification
 from line_processor import LogProcessor
 from config.load_config import validate_entity_config, get_pretty_yaml_config
 from constants import (
+    Actions,
     MonitorType, 
     MonitorDecision, 
-    ACTION_STOP, 
-    ACTION_RESTART
+    Actions
 )
 
 class ContainerConfig:
@@ -290,7 +291,7 @@ class DockerLogMonitor:
                 self.config, 
                 entity_name=monitor_context.entity_name,
                 monitor_instance=self,
-                container_stop_event=container_context.stop_monitoring_event, 
+                entity_stop_event=container_context.stop_monitoring_event, 
                 hostname=self.hostname, 
                 monitor_type=monitor_context.monitor_type,
                 entity_config=monitor_context.entity_config
@@ -413,16 +414,16 @@ class DockerLogMonitor:
         monitored_container_names = [c.entity_name for c in self._registry.get_actively_monitored(monitor_type=MonitorType.CONTAINER)]
         if self.selected_containers or monitored_container_names:
             unmonitored_containers = [c for c in self.selected_containers if c not in monitored_container_names]
-            message += "These containers are being monitored:\n" + "\n - ".join(monitored_container_names)
+            message += "These containers are being monitored:\n - " + "\n - ".join(monitored_container_names)
             if unmonitored_containers:
-                message += "\n\nThese containers are not running:\n" + "\n - ".join(unmonitored_containers)
+                message += "\n\nThese containers are not running:\n - " + "\n - ".join(unmonitored_containers)
         actively_monitored_swarm = [context for context in self._registry.get_actively_monitored(monitor_type=MonitorType.SWARM)]
         if self.selected_swarm_services or actively_monitored_swarm:
             unmonitored_swarm_services = [s for s in self.selected_swarm_services if s not in [s.config_key for s in actively_monitored_swarm]]
             monitored_swarm_service_instances = [s.entity_name for s in actively_monitored_swarm]
-            message += "\n\nThese Swarm Containers are being monitored:\n" + "\n - ".join(monitored_swarm_service_instances)
+            message += "\n\nThese Swarm Containers are being monitored:\n - " + "\n - ".join(monitored_swarm_service_instances)
             if unmonitored_swarm_services:
-                message += "\n\nThese Swarm Services are not running:\n" + "\n - ".join(unmonitored_swarm_services)
+                message += "\n\nThese Swarm Services are not running:\n - " + "\n - ".join(unmonitored_swarm_services)
         return message
 
     def _handle_error(self, error_count, last_error_time, container_name=None):
@@ -536,7 +537,8 @@ class DockerLogMonitor:
                     if gen != container_context.generation:  # if there is a new thread running for this container this thread stops
                         self.logger.debug(f"{entity_name}: Stopping monitoring thread because a new thread was started for this container.")
                         break
-                    elif too_many_errors or not_found_error or check_container(container_start_time, error_count) is False or stop_monitoring_event.is_set():
+                    elif (stop_monitoring_event.is_set() or too_many_errors or not_found_error 
+                    or check_container(container_start_time, error_count) is False):
                         self._close_stream_connection(container.id)
                         break
                     else:
@@ -636,7 +638,7 @@ class DockerLogMonitor:
         # self.logger.debug(f"Threads still alive {len(alive_threads)}: {alive_threads}")
         # self.logger.debug(f"Threading Enumerate: {threading.enumerate()}")                    
 
-    def tail_logs(self, entity_name, monitor_type, lines=10):
+    def tail_logs(self, entity_name, monitor_type, lines=10) -> Optional[str]:
         """
         Tail the last 'lines' of logs for a specific container.
         Returns the last 'lines' of logs as a list of strings.
@@ -659,38 +661,79 @@ class DockerLogMonitor:
             self.logger.error(f"Container {entity_name} not found in registry. Cannot tail logs.\nMonitor Type: {monitor_type}\nself._registry {self._registry.get_actively_monitored(monitor_type='all')}")
             return None
         
-    def container_action(self, entity_name, action, monitor_type=MonitorType.CONTAINER):
+    def container_action(self, monitor_type, entity_name, action):
         """
         Perform an action on a container (start, stop, restart).
         """        
-        if monitor_type != MonitorType.CONTAINER or not (container_context := self._registry.get_by_entity_name(monitor_type, entity_name)):
-            self.logger.error(f"Container {entity_name} not found in registry. Cannot perform action: {action}")
-            return False
-        container = self.client.containers.get(container_context.container_id)
-        if container:
-            try:
-                container_name = container.name
-                if action == ACTION_STOP:
-                    self.logger.info(f"Stopping Container: {container_name}.")
-                    container = container
-                    container.stop()
-                    if container.wait(timeout=10):
-                        container.reload()
-                        self.logger.debug(f"Container {container_name} has been stopped: Status: {container.status}")
-                elif action == ACTION_RESTART:
-                    self.logger.info(f"Restarting Container: {container_name}.")
-                    container = container
-                    container.restart()
-                    container.reload()
-                    self.logger.info(f"Container {container_name} has been restarted. Status: {container.status}")
-
-            except Exception as e:
-                self.logger.error(f"Failed to {action} {entity_name}: {e}")
+        if monitor_type != MonitorType.CONTAINER:
+            return
+            
+        action_parts = action.split("@")
+        if len(action_parts) == 1:
+            action_name = action_parts[0].strip().lower()
+            if not (container_context := self._registry.get_by_entity_name(monitor_type, entity_name)):
+                self.logger.error(f"Container {entity_name} not found in registry. Cannot perform action: {action}")
                 return False
+            container_name = container_context.container_name
+        elif len(action_parts) == 2:
+            action_name = action_parts[0].strip().lower()
+            container_name = action_parts[1].strip()
         else:
-            self.logger.error(f"Container {entity_name} not found. Could not perform action: {action}")
+            self.logger.error(f"Invalid action syntax: {action}")
             return False
 
+        try:
+            container = self.client.containers.get(container_name)
+        except docker.errors.NotFound:
+            self.logger.error(f"Container {container_name} not found. Could not perform action: {action}")
+            return False
+        except Exception as e:
+            self.logger.error(f"Unexpected error while trying to perform action on container {container_name}: {e}")
+            return False
+
+        try:
+            container_name = container.name
+            container.reload()  
+            self.logger.debug(f"Performing action '{action_name}' on container {container_name} with status {container.status}.")
+            if action_name == Actions.STOP.value:
+                if container.status != "running":
+                    self.logger.info(f"Not performing action 'start' on container {container_name}. Container {container_name} is not running.")
+                    return f"did not stop {container_name}, container is not running"
+                self.logger.info(f"Stopping Container: {container_name}.")
+                container = container
+                container.stop()
+                if container.wait(timeout=10):
+                    container.reload()
+                    self.logger.info(f"Container {container_name} has been stopped: Status: {container.status}")
+                return f"{container_name} has been stopped!"
+            elif action_name == Actions.RESTART.value:
+                self.logger.info(f"Restarting Container: {container_name}.")
+                container = container
+                container.restart()
+                container.reload()
+                self.logger.info(f"Container {container_name} has been restarted. Status: {container.status}")
+                return f"{container_name} has been restarted!"
+            elif action_name == Actions.START.value:
+                if container.status == "running":
+                    self.logger.info(f"Not performing action 'start' on container {container_name}. Container {container_name} is already running.")
+                    return f"did not start {container_name}, container is already running"
+                self.logger.info(f"Starting Container: {container_name}.")
+                container = container
+                container.start()
+                start_time = time.time()
+                while True:
+                    container.reload()
+                    if container.status == "running":
+                        break
+                    if time.time() - start_time > 10:
+                        self.logger.warning(f"Timeout while waiting for container {container_name} to start.")
+                        return f"Timeout while waiting for container {container_name} to start."
+                    time.sleep(1)
+                self.logger.info(f"Container {container_name} has been started. Status: {container.status}")
+                return f"{container_name} has been started!"
+        except Exception as e:
+            self.logger.error(f"Failed to {action} {entity_name}: {e}")
+        return f"Failed to perform action '{action_name}' on {container_name}"    
 
 
 

@@ -4,10 +4,13 @@ from pydantic import (
     model_validator,
     ConfigDict,
     SecretStr,
-    ValidationError
+    ValidationError,
+    Field,
+    AfterValidator
 )
 from enum import Enum
-from typing import List, Optional, Union, ClassVar
+from constants import Actions
+from typing import List, Optional, Union, ClassVar, Annotated
 import logging
 import re
 
@@ -45,6 +48,9 @@ class Settings(BaseConfigModel):
     attachment_lines: int = 20
     hide_regex_in_title: Optional[bool] = False
     excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = None
+    olivetin_url: Optional[str] = None
+    olivetin_username: Optional[str] = None
+    olivetin_password: Optional[str] = None
     
 class ModularSettings(BaseConfigModel):
     """
@@ -69,40 +75,43 @@ class ModularSettings(BaseConfigModel):
     excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = None
     hide_regex_in_title: Optional[bool] = None
 
+    olivetin_url: Optional[str] = None
+    olivetin_username: Optional[str] = None
+    olivetin_password: Optional[str] = None
+
     @field_validator("ntfy_priority", mode="before")
     def validate_priority(cls, v):
         return validate_priority(v)
 
-class ActionEnum(str, Enum):
-    RESTART = "restart"
-    STOP = "stop"
+class KeywordItemBase(ModularSettings):
+    json_template: Optional[str] = None
+    action: Optional[str] = None
+    olivetin_action_id: Optional[str] = None
 
+    @field_validator("action")
+    def validate_action(cls, v):
+        if v and not any(a.value == v.split('@')[0] for a in Actions):
+            return None
+        return v
 
-
-class RegexItem(ModularSettings):
+class RegexItem(KeywordItemBase):
     """
     Model for a regex-based keyword with optional settings.
     """
     regex: str
-    json_template: Optional[str] = None
     template: Optional[str] = None
-    action: Optional[ActionEnum] = None
 
-class KeywordItem(ModularSettings):
+class KeywordItem(KeywordItemBase):
     """
     Model for a string-based keyword with optional settings.
     """
     keyword: str
-    json_template: Optional[str] = None
-    action: Optional[ActionEnum] = None
 
-class KeywordGroup(ModularSettings):
+class KeywordGroup(KeywordItemBase):
     """
     Model for a group of keywords.
     """
     keyword_group: List[Union[str, KeywordItem, RegexItem]] = []
-    json_template: Optional[str] = None
-    action: Optional[ActionEnum] = None
 
 class KeywordBase(BaseModel):
     """
@@ -123,21 +132,25 @@ class KeywordBase(BaseModel):
                 if isinstance(item, dict):
                     keys = list(item.keys())
                     if "keyword" not in item and "regex" not in item and "keyword_group" not in item:
-                        logging.warning(f"Ignoring Error in config in field 'keywords': '{item}'. You have to set 'keyword', 'regex' or 'keyword_group' as a key.")
+                        logging.warning(f"Ignoring Error in config in field 'keywords': '{get_kw_or_rgx(item)}'. You have to set 'keyword', 'regex' or 'keyword_group' as a key.")
                         continue
                     if "keyword_group" in item and not isinstance(item["keyword_group"], list):
-                        logging.warning(f"Ignoring Error in config in field 'keywords': '{item}'. You have to set 'keyword_group' as a list.")
+                        logging.warning(f"Ignoring Error in config in field 'keywords': '{get_kw_or_rgx(item)}'. You have to set 'keyword_group' as a list.")
                         continue
                     if "regex" in item and not validate_regex(item["regex"]):
-                        logging.warning(f"Ignoring Error in config in field 'keywords': '{item}'. Invalid regex.")
+                        logging.warning(f"Ignoring Error in config in field 'keywords': '{get_kw_or_rgx(item)}'. Invalid regex.")
                         continue
                     for key in keys:
+                        if key == "action":
+                            if not isinstance(item["action"], str) or not any(action.value in item["action"].split('@')[0] for action in Actions):
+                                logging.warning(f"Ignoring Error in config in field 'keywords': '{get_kw_or_rgx(item)}'. Invalid action: '{item['action']}'.")
+                                item["action"] = None
+                                continue
                         if isinstance(item[key], int):
                             item[key] = str(item[key])
                     if cls._DISALLOW_ACTION and "action" in item:
                         if item["action"] is not None:
-                            ident = item.get("keyword") or item.get("regex") or "unknown"
-                            logging.warning(f"Action not allowed in this context. Removing for: {ident}")
+                            logging.warning(f"Action not allowed in this context. Removing for: {get_kw_or_rgx(item)}")
                         item["action"] = None  
                     converted.append(item)
                 else:
@@ -281,3 +294,11 @@ def validate_regex(v):
         logging.warning(f"Error in config for regex: '{v}'. Invalid regex. {e}")
         return False 
     return True
+
+def get_kw_or_rgx(item):
+    if isinstance(item, dict):
+        if "keyword" in item:
+            return item["keyword"]
+        elif "regex" in item:
+            return item["regex"]
+    return "unknown"

@@ -22,12 +22,7 @@ COPY --from=builder /install /usr/local
 
 LABEL org.opencontainers.image.source="https://github.com/clemcer/loggifly"
 
-COPY app/line_processor.py /app/
-COPY app/notifier.py /app/
-COPY app/docker_monitor.py /app/
-COPY app/app.py /app/
-COPY app/constants.py /app/
-COPY app/config/ /app/config/
+COPY app/ .
 
 ENTRYPOINT ["python", "app.py"]
     

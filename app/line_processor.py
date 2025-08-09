@@ -3,19 +3,19 @@ import os
 import re
 import time
 import json
-import string
+from typing import Optional
 import logging
 import traceback
 import threading
 from threading import Thread, Lock
 from notifier import send_notification
+from services import perform_olivetin_action
 from config.config_model import GlobalConfig, KeywordItem, RegexItem, KeywordGroup
 from constants import (
     MonitorType, 
     COMPILED_STRICT_PATTERNS, 
     COMPILED_FLEX_PATTERNS,
-    ACTION_STOP,
-    ACTION_RESTART
+    Actions
 )
 
 class LogProcessor:
@@ -39,12 +39,12 @@ class LogProcessor:
                  monitor_instance,
                  entity_name, 
                  monitor_type,
-                 hostname=None, 
-                 container_stop_event=None, 
+                 entity_stop_event,
+                 hostname=None 
                  ):
         self.logger = logger
         self.hostname = hostname    # Hostname for multi-client setups; empty if single client
-        self.container_stop_event = container_stop_event
+        self.entity_stop_event = entity_stop_event
         self.entity_name = entity_name
         self.monitor_type = monitor_type # container, swarm
         self.monitor_instance = monitor_instance # DockerMonitor instance from which the processor is called
@@ -141,34 +141,6 @@ class LogProcessor:
                 for keyword in keyword_dict.get("keyword_group"):
                     self.time_per_keyword[keyword] = 0
 
-
-    def get_message_config(self, keyword_message_config):
-        """
-        Merge container-level message config into keyword-level config for a single message.
-        """
-        for key, value in self.container_message_config.items():
-            if key not in keyword_message_config:
-                keyword_message_config[key] = value
-            elif isinstance(value, list) and isinstance(keyword_message_config.get(key), list):
-                keyword_message_config[key].extend(value)
-        return keyword_message_config
-
-    def process_line(self, line):
-        """        
-        Entry point for processing a single log line. 
-        If multi-line mode is off or no pattern is detected, processes as single line; otherwise, processes as part of a multi-line entry.
-        """
-        clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line)
-        if self.multi_line_mode is False:
-            self._search_and_send(clean_line)
-        else:
-            if self.line_count < self.line_limit:
-                self._find_starting_pattern(clean_line)
-            if self.valid_pattern == True:
-                self._process_multi_line(clean_line)
-            else:
-                self._search_and_send(clean_line)
-
     def _find_starting_pattern(self, log):
         """
         Analyze log lines to identify patterns that mark the beginning of new log entries.
@@ -205,6 +177,33 @@ class LogProcessor:
 
         self.waiting_for_pattern = False
 
+    def get_message_config(self, keyword_message_config):
+        """
+        Merge container-level message config into keyword-level config for a single message.
+        """
+        for key, value in self.container_message_config.items():
+            if key not in keyword_message_config:
+                keyword_message_config[key] = value
+            elif isinstance(value, list) and isinstance(keyword_message_config.get(key), list):
+                keyword_message_config[key].extend(value)
+        return keyword_message_config
+
+    def process_line(self, line):
+        """        
+        Entry point for processing a single log line. 
+        If multi-line mode is off or no pattern is detected, processes as single line; otherwise, processes as part of a multi-line entry.
+        """
+        clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line)
+        if self.multi_line_mode is False:
+            self._search_and_send(clean_line)
+        else:
+            if self.line_count < self.line_limit:
+                self._find_starting_pattern(clean_line)
+            if self.valid_pattern == True:
+                self._process_multi_line(clean_line)
+            else:
+                self._search_and_send(clean_line)
+
     def _start_flush_thread(self):
         def check_flush():
             """
@@ -212,9 +211,9 @@ class LogProcessor:
             """
             self.flush_thread_stopped.clear()
             while True:
-                if self.container_stop_event and self.container_stop_event.is_set():
+                if self.entity_stop_event and self.entity_stop_event.is_set():
                     time.sleep(4)
-                    if self.container_stop_event.is_set():
+                    if self.entity_stop_event.is_set():
                         break
                 if self.multi_line_mode is False:
                     break
@@ -232,8 +231,8 @@ class LogProcessor:
     def _handle_and_clear_buffer(self):
         """Flush buffer and process its contents as a single log entry."""
         log_entry = "\n".join(self.buffer)
-        self._search_and_send(log_entry)
         self.buffer.clear()
+        self._search_and_send(log_entry)
 
     def _process_multi_line(self, line):
         """
@@ -243,21 +242,21 @@ class LogProcessor:
         # Wait if pattern detection is in progress
         while self.waiting_for_pattern is True:
             time.sleep(1)
-
-        for pattern in self.patterns:
-            # If line matches a start pattern, flush buffer and start new entry
-            if pattern.search(line):
-                if self.buffer:
-                    self._handle_and_clear_buffer()
-                self.buffer.append(line)
-                break
+        with self.lock_buffer:
+            for pattern in self.patterns:
+                # If line matches a start pattern, flush buffer and start new entry
+                if pattern.search(line):
+                    if self.buffer:
+                        self._handle_and_clear_buffer()
+                    self.buffer.append(line)
+                    break
         # Otherwise, append to current buffer (continuation of previous entry)
-        else:
-            if self.buffer:
-                self.buffer.append(line)
             else:
-                # Fallback: unexpected format, start new buffer
-                self.buffer.append(line)
+                if self.buffer:
+                    self.buffer.append(line)
+                else:
+                    # Fallback: unexpected format, start new buffer
+                    self.buffer.append(line)
         self.log_stream_last_updated = time.time()
 
     def _search_keyword(self, log_line, keyword_dict, ignore_keyword_time=False):
@@ -299,7 +298,7 @@ class LogProcessor:
         """
         keywords_found = []
         excluded_keywords = self.entity_config.excluded_keywords if self.entity_config.excluded_keywords else []
-        keyword_message_config = {"message": log_line, "entity_name": self.entity_name, "monitor_type": self.monitor_type}
+        keyword_message_config = {"message": log_line, "entity_name": self.entity_name, "monitor_type": self.monitor_type.value}
         template_found = False
         for keyword_dict in self.keywords:
             found = self._search_keyword(log_line, keyword_dict)
@@ -314,65 +313,59 @@ class LogProcessor:
                         keyword_message_config[key] = value
                 keywords_found.append(found)
 
-        # Send notification if any keywords matched
-        if keywords_found:
-            # when a excluded keyword is found, the log line gets ignored and the function returns
-            if excluded_keywords:
-                for keyword in self._get_keywords(excluded_keywords):
-                    found = self._search_keyword(log_line, keyword, ignore_keyword_time=True)
-                    if found:
-                        self.logger.debug(f"Keyword(s) '{keywords_found}' found in '{self.entity_name} but IGNORED because excluded keyword '{found}' was found")
-                        return
+        if not keywords_found:
+            return
+        # When an excluded keyword is found, the log line gets ignored and the function returns
+        if excluded_keywords:
+            for keyword in self._get_keywords(excluded_keywords):
+                found = self._search_keyword(log_line, keyword, ignore_keyword_time=True)
+                if found:
+                    self.logger.debug(f"Keyword(s) '{keywords_found}' found in '{self.entity_name} but IGNORED because excluded keyword '{found}' was found")
+                    return
 
-            keyword_message_config["keywords_found"] = keywords_found
-            action = keyword_message_config.get("action")
-            if self.monitor_type == MonitorType.CONTAINER and action is not None:
-                if self.last_action_time is None or (self.last_action_time is not None and time.time() - self.last_action_time >= max(int(self.action_cooldown), 60)):
-                    success = self._container_action(action)
-                    action = (action, success)
-                    self.last_action_time = time.time()
-                else:
-                    action = None
+        keyword_message_config["keywords_found"] = keywords_found
+        action_to_perform = keyword_message_config.get("action")
+        action_result = None
+        if self.monitor_type == MonitorType.CONTAINER and action_to_perform is not None:
+            if self.last_action_time is None or (self.last_action_time is not None and time.time() - self.last_action_time >= int(self.action_cooldown)):
+                action_result = self._container_action(action_to_perform) # returns success, container_name, action_name
+                self.last_action_time = time.time()
             else:
-                action = None
+                last_action_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.last_action_time))
+                self.logger.debug(f"Action '{action_to_perform}' for {self.entity_name} is on cooldown. Last action was at {last_action_time}. Cooldown is {self.action_cooldown} seconds.")
 
-            message_config = self.get_message_config(keyword_message_config)
-            attach_logfile = message_config["attach_logfile"]
-            formatted_log_entry ="\n  -----  LOG-ENTRY  -----\n" + ' | ' + '\n | '.join(log_line.splitlines()) + "\n   -----------------------"
-            self.logger.info(f"The following keywords were found in {self.entity_name}: {keywords_found}."
-                        + (f" (A Log FIle will be attached)" if attach_logfile else "")
-                        + f"{formatted_log_entry}"
-                        )
-            self._send_message(message_config, attach_logfile=attach_logfile, action=action)
+        message_config = self.get_message_config(keyword_message_config)
+        attachment = None
+        if message_config["attach_logfile"]:
+            if result := self._log_attachment(message_config["attachment_lines"]):
+                attachment = {"content": result[0], "file_name": result[1]}
+            else:
+                self.logger.error(f"Could not create log attachment file for Container {self.entity_name}")
+            
+        formatted_log_entry ="\n  -----  LOG-ENTRY  -----\n" + ' | ' + '\n | '.join(log_line.splitlines()) + "\n   -----------------------"
+        self.logger.info(f"The following keywords were found in {self.entity_name}: {keywords_found}."
+                    + (f" (A Log FIle will be attached)" if attachment else "")
+                    + f"{formatted_log_entry}"
+                    )
+        title = get_notification_title(message_config, action_result)
+        self._send_message(title, message_config["message"], message_config, attachment=attachment)
 
-    def _send_message(self, message_config, attach_logfile=False, action=None):
+        if message_config.get("olivetin_action_id"):
+            title, message = perform_olivetin_action(self.config, message_config, message_config["olivetin_action_id"])
+            self._send_message(title, message, message_config)
+
+    def _send_message(self, title, message, message_config, attachment=None):
         """
         Format notification title and call send_notification(). Optionally attach log file.
         """
-        title = get_notification_title(message_config, action)
-        file_path = None
-        if attach_logfile:
-            if (result := self._log_attachment(message_config["attachment_lines"])):
-                attachment, file_name = result
-                message_config["attachment"] = attachment
-                message_config["file_name"] = file_name
-            else:
-                self.logger.error(f"Could not create log attachment file for Container {self.entity_name}")
-                return
         send_notification(self.config,
-                          entity_name=self.entity_name,
-                          title=title,
-                          message=message_config["message"],
-                          message_config=message_config,
-                          container_config=self.entity_config,
-                          hostname=self.hostname)
-
-        if file_path and isinstance(file_path, str):
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                self.logger.debug(f"The file {file_path} was deleted.")
-            else:
-                self.logger.debug(f"The file {file_path} does not exist.")
+                        entity_name=self.entity_name,
+                        title=title,
+                        message=message,
+                        message_config=message_config,
+                        container_config=self.entity_config,
+                        attachment=attachment,
+                        hostname=self.hostname)
 
     def _log_attachment(self, number_attachment_lines):
         """
@@ -390,23 +383,20 @@ class LogProcessor:
             self.logger.error(f"Could not create log attachment file for Container {self.entity_name}: {e}")
             return None, None
 
-    def _container_action(self, action):
+    def _container_action(self, action: str) -> Optional[str]:
         """
         Perform the specified container action (stop or restart). Returns True on success, False on error.
+        syntax is 'action' or 'action@container_name'
         """
-        if self.monitor_type == MonitorType.CONTAINER:
-            # Validate that action is a supported action
-            if action not in [ACTION_STOP, ACTION_RESTART]: # "stop" and "restart" are defined in constants.py
-                self.logger.error(f"Unsupported action {action} requested for container {self.entity_name}")
-                return False
-            result = self.monitor_instance.container_action(self.entity_name, action)
-            return result
-        else:
-            self.logger.debug(f"Skipping container action for {self.entity_name} because it is a swarm service or not a docker container.")
-            return False
+        if not self.monitor_type == MonitorType.CONTAINER:
+            self.logger.error(f"Action not allowed for {self.entity_name} because it is of the type {self.monitor_type.value}.")
+            return None
+        # Validate that action is a supported action
+        result = self.monitor_instance.container_action(self.monitor_type, self.entity_name, action)
+        return result
 
 
-def get_notification_title(message_config, action):
+def get_notification_title(message_config: dict, action_result: Optional[str] = None):
     """
     Generate a notification title based on the template in the message config.
     """
@@ -414,7 +404,6 @@ def get_notification_title(message_config, action):
     keywords_found = message_config.get("keywords_found", "")
     notification_title = message_config.get("notification_title", "default")
     entity_name = message_config.get("entity_name", "") 
-    monitor_type = message_config.get("monitor_type", MonitorType.CONTAINER)
 
     if notification_title.strip().lower() != "default":
         template = ""
@@ -422,10 +411,9 @@ def get_notification_title(message_config, action):
             keywords = ', '.join(f"'{word}'" for word in keywords_found)
             template = notification_title.strip()
             template_fields = {
-                "container": entity_name if monitor_type == MonitorType.CONTAINER else "",
+                "container": entity_name,
                 "keywords": keywords, 
                 "keyword": keywords, 
-                "swarm_service": entity_name if monitor_type == MonitorType.SWARM else ""
             }
             title = template.format(**template_fields)
         except KeyError as e:
@@ -444,12 +432,8 @@ def get_notification_title(message_config, action):
             joined_keywords = ', '.join(f"'{word}'" for word in keywords_found)
             title = f"The following keywords were found in {entity_name}: {joined_keywords}"
 
-    if action and not title:
-        action, success = action
-        if success:
-            title = f"{entity_name} was {'stopped' if action == 'stop' else 'restarted'}! - " + title
-        else:
-            title = f"Failed to {'stop' if action == 'stop' else 'restart'} {entity_name}!" + title
+    if action_result is not None:
+        title = f"{title} ({action_result})"
 
     if not title:
         title = f"{entity_name}: {keywords_found}"
