@@ -62,6 +62,7 @@ class LogProcessor:
         # These are updated in load_config_variables()
         self.multi_line_mode = False 
         self.time_per_keyword = {}
+        self.time_per_action = {}
 
         self.load_config_variables(config, unit_config)
         # If multi-line mode is on, find starting pattern in logs
@@ -119,17 +120,10 @@ class LogProcessor:
             "attach_logfile": unt_cnf.get("attach_logfile") if unt_cnf.get("attach_logfile") is not None else config.settings.attach_logfile,
             "excluded_keywords": (unt_cnf.get("excluded_keywords") or []) + (config.settings.excluded_keywords or []),
             "hide_regex_in_title": unt_cnf.get("hide_regex_in_title") if unt_cnf.get("hide_regex_in_title") is not None else config.settings.hide_regex_in_title,
+            "disable_notifications": unt_cnf.get("disable_notifications") or config.settings.disable_notifications or False,
         }
         self.multi_line_mode = config.settings.multi_line_entries
         self.action_cooldown= unt_cnf.get("action_cooldown") or config.settings.action_cooldown or 300
-        
-        self.last_action_time = None
-        for keyword_dict in self.keywords:
-            if (keyword := keyword_dict.get("keyword") or keyword_dict.get("regex")):
-                self.time_per_keyword[keyword] = 0
-            elif "keyword_group" in keyword_dict:
-                for keyword in keyword_dict.get("keyword_group"):
-                    self.time_per_keyword[keyword] = 0
         self.start_flush_thread_if_needed()
 
 
@@ -328,11 +322,11 @@ class LogProcessor:
         action_to_perform = keyword_msg_cnf.get("action")
         action_result = None
         if action_to_perform is not None:
-            if self.last_action_time is None or (self.last_action_time is not None and time.time() - self.last_action_time >= int(self.action_cooldown)):
+            if self.time_per_action.get(action_to_perform, 0) < time.time() - int(self.action_cooldown):
                 action_result = self._container_action(action_to_perform) # returns result as a string that can be used in a notification title
-                self.last_action_time = time.time()
+                self.time_per_action[action_to_perform] = time.time()
             else:
-                last_action_time = time.strftime("%H:%M:%S", time.localtime(self.last_action_time))
+                last_action_time = time.strftime("%H:%M:%S", time.localtime(self.time_per_action.get(action_to_perform, 0)))
                 self.logger.info(f"Action for {self.unit_name} is on cooldown. Not performing action:'{action_to_perform}'. Last action was at {last_action_time}. Cooldown is {self.action_cooldown} seconds.")
 
         msg_cnf = self.get_message_config(keyword_msg_cnf)
@@ -348,12 +342,18 @@ class LogProcessor:
                     + (f" (A Log FIle will be attached)" if attachment else "")
                     + f"{formatted_log_entry}"
                     )
-        title = get_notification_title(msg_cnf, action_result)
-        self._send_message(title, msg_cnf["message"], msg_cnf, attachment=attachment)
+        disable_notifications = msg_cnf.get("disable_notifications") or self.container_msg_cnf.get("disable_notifications") or False
+        if disable_notifications:
+            self.logger.info(f"Not sending notification for {self.unit_name} because it is disabled..")
+            return
+        if not disable_notifications:
+            title = get_notification_title(msg_cnf, action_result)
+            self._send_message(title, msg_cnf["message"], msg_cnf, attachment=attachment)
 
         if msg_cnf.get("olivetin_action_id"):
             title, message = perform_olivetin_action(self.config, msg_cnf, msg_cnf["olivetin_action_id"])
-            self._send_message(title, message, msg_cnf)
+            if not disable_notifications:
+                self._send_message(title, message, msg_cnf)
 
     def _send_message(self, title, message, msg_cnf, attachment=None):
         """

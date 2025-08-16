@@ -88,6 +88,7 @@ def load_config(official_path="/config/config.yaml"):
         "action_cooldown": os.getenv("ACTION_COOLDOWN"),
         "attach_logfile": os.getenv("ATTACH_LOGFILE", "false").lower() == "true",
         "hide_regex_in_title": os.getenv("HIDE_REGEX_IN_TITLE", "false").lower() == "true",
+        "disable_notifications": os.getenv("DISABLE_NOTIFICATIONS", "false").lower() == "true",
         "excluded_keywords": [kw.strip() for kw in os.getenv("EXCLUDED_KEYWORDS", "").split(",") if kw.strip()] if os.getenv("EXCLUDED_KEYWORDS") else None,
         "olivetin_url": os.getenv("OLIVETIN_URL"),
         "olivetin_username": os.getenv("OLIVETIN_USERNAME"),

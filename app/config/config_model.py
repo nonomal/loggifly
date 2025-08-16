@@ -48,6 +48,7 @@ class Settings(BaseConfigModel):
     attachment_lines: int = 20
     hide_regex_in_title: Optional[bool] = False
     excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = None
+    disable_notifications: Optional[bool] = None
     olivetin_url: Optional[str] = None
     olivetin_username: Optional[str] = None
     olivetin_password: Optional[str] = None
@@ -74,6 +75,7 @@ class ModularSettings(BaseConfigModel):
     attach_logfile: Optional[bool] = None
     excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = None
     hide_regex_in_title: Optional[bool] = None
+    disable_notifications: Optional[bool] = None
 
     olivetin_url: Optional[str] = None
     olivetin_username: Optional[str] = None
