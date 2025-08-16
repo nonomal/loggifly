@@ -37,7 +37,7 @@ def create_handle_signal(monitor_instances, config, config_observer):
     def handle_signal(signum, frame):
         if not config.settings.disable_shutdown_message:
             send_notification(config=config,
-                            entity_name= "LoggiFly",
+                            unit_name= "LoggiFly",
                             title="LoggiFly", 
                             message="Shutting down")
         if config_observer is not None:
@@ -55,6 +55,11 @@ def create_handle_signal(monitor_instances, config, config_observer):
 
     return handle_signal, global_shutdown_event
     
+def format_message(messages, alt_text):
+    message_line_break = "\n" + "-" * 60 + "\n"
+    message = message_line_break.join(messages) if messages else alt_text
+    message = "-" * 60 + "\n" + message + "\n" + "-" * 60
+    return message
 
 class ConfigHandler(FileSystemEventHandler):
     """
@@ -87,15 +92,16 @@ class ConfigHandler(FileSystemEventHandler):
         messages = []
         for monitor in self.monitor_instances:
             messages.append(monitor.reload_config(self.config))
-        message_line_break = "\n\n" + "-" * 60 + "\n\n"
-        message = message_line_break.join(messages) if messages else "LoggiFly is not mointoring anything."
-        message = "-" * 60 + "\n" + message + "\n" + "-" * 60
+        # message_line_break = "\n" + "-" * 60 + "\n"
+        # message = message_line_break.join(messages) if messages else "LoggiFly is not monitoring anything."
+        # message = "-" * 60 + "\n" + message + "\n" + "-" * 60
+        message = format_message(messages, "LoggiFly is not monitoring anything.")
 
         logging.info(f"Config reloaded successfully.\n{message}")
         if self.config.settings.disable_config_reload_message is False:
             send_notification(
                 config=self.config,
-                entity_name="LoggiFly",
+                unit_name="LoggiFly",
                 title="LoggiFly: The config file was reloaded",
                 message=message
             )
@@ -264,15 +270,16 @@ def start_loggifly():
 
     monitor_instances = [docker_hosts[host]["monitor"] for host in docker_hosts.keys()]
                 
-    message_line_break = "\n\n" + "-" * 60 + "\n\n"
-    message = message_line_break.join(start_messages) if start_messages else "LoggiFly started without mointoring anything."
-    message = "-" * 60 + "\n" + message + "\n\n" + "-" * 60
+    # message_line_break = "\n\n" + "-" * 60 + "\n\n"
+    # message = message_line_break.join(start_messages) if start_messages else "LoggiFly started without monitoring anything."
+    # message = "-" * 60 + "\n" + message + "\n\n" + "-" * 60
+    message = format_message(start_messages, "LoggiFly started without monitoring anything.")
 
     logging.info(f"LoggiFly started.\n{message}")
     if config.settings.disable_start_message is False:
         send_notification(
             config=config,
-            entity_name="LoggiFly",
+            unit_name="LoggiFly",
             title="LoggiFly started",
             message=message
         )
@@ -295,4 +302,3 @@ def start_loggifly():
 if __name__ == "__main__":
     global_shutdown_event = start_loggifly()
     global_shutdown_event.wait()
-    

@@ -13,7 +13,7 @@ from constants import Actions
 from typing import List, Optional, Union, ClassVar, Annotated
 import logging
 import re
-
+import copy
 
 class BaseConfigModel(BaseModel):
     model_config = ConfigDict(
@@ -39,7 +39,7 @@ class Settings(BaseConfigModel):
     disable_config_reload_message: bool = False
     disable_container_event_message: bool = False
     reload_config: bool = True
-    
+
     # modular settings:
     attach_logfile: bool = False
     notification_cooldown: int = 5
@@ -132,26 +132,27 @@ class KeywordBase(BaseModel):
                 if isinstance(item, dict):
                     keys = list(item.keys())
                     if "keyword" not in item and "regex" not in item and "keyword_group" not in item:
-                        logging.warning(f"Ignoring Error in config in field 'keywords': '{get_kw_or_rgx(item)}'. You have to set 'keyword', 'regex' or 'keyword_group' as a key.")
+                        logging.warning(f"Ignoring Error in config in field {get_kw_or_rgx(item)}: You have to set 'keyword', 'regex' or 'keyword_group' as a key.")
                         continue
-                    if "keyword_group" in item and not isinstance(item["keyword_group"], list):
-                        logging.warning(f"Ignoring Error in config in field 'keywords': '{get_kw_or_rgx(item)}'. You have to set 'keyword_group' as a list.")
+                    elif "keyword_group" in item and not isinstance(item["keyword_group"], list):
+                        logging.warning(f"Ignoring Error in config in field {get_kw_or_rgx(item)}: You have to set 'keyword_group' as a list.")
                         continue
-                    if "regex" in item and not validate_regex(item["regex"]):
-                        logging.warning(f"Ignoring Error in config in field 'keywords': '{get_kw_or_rgx(item)}'. Invalid regex.")
+                    elif "regex" in item and not validate_regex(item["regex"]):
+                        logging.warning(f"Ignoring Error in config in field {get_kw_or_rgx(item)}: Invalid regex.")
                         continue
                     for key in keys:
                         if key == "action":
-                            if not isinstance(item["action"], str) or not any(action.value in item["action"].split('@')[0] for action in Actions):
-                                logging.warning(f"Ignoring Error in config in field 'keywords': '{get_kw_or_rgx(item)}'. Invalid action: '{item['action']}'.")
+                            if (not isinstance(item["action"], str) 
+                            or not 0 < len(item["action"].split('@')) < 3 
+                            or not any(action.value in item["action"].split('@')[0] for action in Actions)):
+                                logging.warning(f"Ignoring Error in config in field {get_kw_or_rgx(item)}: Invalid action: '{item['action']}'.")
                                 item["action"] = None
                                 continue
+                            elif cls._DISALLOW_ACTION and len(item["action"].split('@')) < 2:
+                                logging.warning(f"Actions on swarm containers/services are not allowed. Removing action '{item['action']}' for {get_kw_or_rgx(item)}")
+                                item["action"] = None
                         if isinstance(item[key], int):
                             item[key] = str(item[key])
-                    if cls._DISALLOW_ACTION and "action" in item:
-                        if item["action"] is not None:
-                            logging.warning(f"Action not allowed in this context. Removing for: {get_kw_or_rgx(item)}")
-                        item["action"] = None  
                     converted.append(item)
                 else:
                     try:
@@ -178,15 +179,6 @@ class SwarmServiceConfig(KeywordBase, ModularSettings):
     """
     _DISALLOW_ACTION: ClassVar[bool] = True
     hosts: Optional[str] = None
-
-class SystemdServiceConfig(KeywordBase, ModularSettings):
-    """
-    Model for per-systemd service configuration, inheriting from ContainerConfig.
-    """
-    _DISALLOW_ACTION: ClassVar[bool] = True
-
-    hosts: Optional[str] = None
-    custom_filters: Optional[List[str]] = None
 
 class GlobalKeywords(BaseConfigModel, KeywordBase):
     pass
@@ -225,7 +217,6 @@ class GlobalConfig(BaseConfigModel):
     """Root configuration model for the application"""
     containers: dict[str, ContainerConfig] | None = None
     swarm_services: dict[str, SwarmServiceConfig] | None = None
-    systemd_services: dict[str, SystemdServiceConfig] | None = None
     global_keywords: GlobalKeywords
     notifications: NotificationsConfig
     settings: Settings
@@ -251,11 +242,11 @@ class GlobalConfig(BaseConfigModel):
     @model_validator(mode="after")
     def check_at_least_one(self) -> "GlobalConfig":
         # Ensure at least one container or swarm service and at least one keyword is configured
-        if not self.containers and not self.swarm_services and not self.systemd_services:
+        if not self.containers and not self.swarm_services:
             raise ValueError("You have to configure at least one container")
-        all_keywords = self.global_keywords.keywords.copy()
+        all_keywords = copy.deepcopy(self.global_keywords.keywords)
         if not all_keywords:
-            for config in [self.containers, self.swarm_services, self.systemd_services]:
+            for config in [self.containers, self.swarm_services]:
                 if config:
                     for c in config.values():
                         all_keywords.extend(c.keywords)
@@ -298,7 +289,9 @@ def validate_regex(v):
 def get_kw_or_rgx(item):
     if isinstance(item, dict):
         if "keyword" in item:
-            return item["keyword"]
+            return f"keyword: '{item['keyword']}'"
         elif "regex" in item:
-            return item["regex"]
+            return f"regex: '{item['regex']}'"
+        elif "keyword_group" in item:
+            return f"keyword_group: '{item['keyword_group']}'"
     return "unknown"
