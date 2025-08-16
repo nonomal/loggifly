@@ -12,10 +12,8 @@ from notifier import send_notification
 from services import perform_olivetin_action
 from config.config_model import GlobalConfig, KeywordItem, RegexItem, KeywordGroup
 from constants import (
-    MonitorType, 
     COMPILED_STRICT_PATTERNS, 
     COMPILED_FLEX_PATTERNS,
-    Actions
 )
 
 class LogProcessor:
@@ -35,20 +33,20 @@ class LogProcessor:
     def __init__(self,
                  logger, 
                  config: GlobalConfig, 
-                 entity_config,
+                 unit_config,
                  monitor_instance,
-                 entity_name, 
+                 unit_name, 
                  monitor_type,
-                 entity_stop_event,
+                 unit_stop_event,
                  hostname=None 
                  ):
         self.logger = logger
-        self.hostname = hostname    # Hostname for multi-client setups; empty if single client
-        self.entity_stop_event = entity_stop_event
-        self.entity_name = entity_name
+        self.hostname = hostname    # Hostname for multi-client setups to differentiate between clients; empty if single client
+        self.unit_stop_event = unit_stop_event
+        self.unit_name = unit_name
         self.monitor_type = monitor_type # container, swarm
         self.monitor_instance = monitor_instance # DockerMonitor instance from which the processor is called
-        self.entity_config = entity_config
+        self.unit_config = unit_config
 
         self.patterns = []
         self.patterns_count = {pattern: 0 for pattern in self.__class__.COMPILED_STRICT_PATTERNS + self.__class__.COMPILED_FLEX_PATTERNS}
@@ -65,26 +63,22 @@ class LogProcessor:
         self.multi_line_mode = False 
         self.time_per_keyword = {}
 
-        self.load_config_variables(config, entity_config)
+        self.load_config_variables(config, unit_config)
         # If multi-line mode is on, find starting pattern in logs
         if self.multi_line_mode is True:
+            self.log_stream_last_updated = time.time()
+            self.new_line_event = threading.Event()
+            self.buffer = []
             if self.valid_pattern is False:
-                log_tail = self.monitor_instance.tail_logs(entity_name=self.entity_name, 
+                log_tail = self.monitor_instance.tail_logs(unit_name=self.unit_name, 
                                                             monitor_type=self.monitor_type, 
                                                             lines=100)
                 if log_tail:
                     self._find_starting_pattern(log_tail)
                 if self.valid_pattern:
-                    self.logger.debug(f"{self.entity_name}: Mode: Multi-Line. Found starting pattern(s) in logs.")
+                    self.logger.debug(f"{self.unit_name}: Mode: Multi-Line. Found starting pattern(s) in logs.")
                 else:
-                    self.logger.debug(f"{self.entity_name}: Mode: Single-Line. Could not find starting pattern in the logs. Continuing the search in the next {self.line_limit - self.line_count} lines")
-
-            self.buffer = []
-            self.log_stream_timeout = 1 # Not yet configurable
-            self.log_stream_last_updated = time.time()
-            # Start background thread for buffer flushing
-            self._start_flush_thread()
-
+                    self.logger.debug(f"{self.unit_name}: Mode: Single-Line. Could not find starting pattern in the logs. Continuing the search in the next {self.line_limit - self.line_count} lines")
 
     def _get_keywords(self, keywords):
         """
@@ -106,32 +100,28 @@ class LogProcessor:
                 returned_keywords.append(item)
         return returned_keywords
 
-    def load_config_variables(self, config, entity_config):
+    def load_config_variables(self, config, unit_config):
         """
         Load and merge configuration for global and container-specific keywords and settings.
         Called on initialization and when reloading config.
         """
         self.config = config
-        self.entity_config = entity_config
-        config_global_keywords = self.config.global_keywords
-        self.keywords = self._get_keywords(config_global_keywords.keywords)            
-        if not self.entity_config:
-            self.logger.error(f"No container config found for {self.entity_name} in {self.monitor_type} config.")
-            return
+        self.unit_config = unit_config
+        self.keywords = self._get_keywords(self.config.global_keywords.keywords)        
+        self.time_per_keyword = {}
+        unt_cnf = self.unit_config.model_dump() if self.unit_config else {}
+        self.keywords.extend(self._get_keywords(unt_cnf.get("keywords", [])))
 
-        self.keywords.extend(self._get_keywords(self.entity_config.keywords))
-
-        self.container_message_config = {
-            "attachment_lines": self.entity_config.attachment_lines or self.config.settings.attachment_lines,
-            "notification_cooldown": self.entity_config.notification_cooldown if self.entity_config.notification_cooldown is not None else self.config.settings.notification_cooldown,
-            "notification_title": self.entity_config.notification_title or self.config.settings.notification_title,
-            "attach_logfile": self.entity_config.attach_logfile if self.entity_config.attach_logfile is not None else self.config.settings.attach_logfile,
-            "excluded_keywords": self.entity_config.excluded_keywords or self.config.settings.excluded_keywords,
-            "hide_regex_in_title": self.entity_config.hide_regex_in_title if self.entity_config.hide_regex_in_title is not None else self.config.settings.hide_regex_in_title,
+        self.container_msg_cnf = {
+            "attachment_lines": unt_cnf.get("attachment_lines") or config.settings.attachment_lines,
+            "notification_cooldown": unt_cnf.get("notification_cooldown") if unt_cnf.get("notification_cooldown") is not None else config.settings.notification_cooldown,
+            "notification_title": unt_cnf.get("notification_title") or config.settings.notification_title,
+            "attach_logfile": unt_cnf.get("attach_logfile") if unt_cnf.get("attach_logfile") is not None else config.settings.attach_logfile,
+            "excluded_keywords": (unt_cnf.get("excluded_keywords") or []) + (config.settings.excluded_keywords or []),
+            "hide_regex_in_title": unt_cnf.get("hide_regex_in_title") if unt_cnf.get("hide_regex_in_title") is not None else config.settings.hide_regex_in_title,
         }
-
-        self.multi_line_mode = self.config.settings.multi_line_entries
-        self.action_cooldown= self.entity_config.action_cooldown or self.config.settings.action_cooldown or 300
+        self.multi_line_mode = config.settings.multi_line_entries
+        self.action_cooldown= unt_cnf.get("action_cooldown") or config.settings.action_cooldown or 300
         
         self.last_action_time = None
         for keyword_dict in self.keywords:
@@ -140,6 +130,8 @@ class LogProcessor:
             elif "keyword_group" in keyword_dict:
                 for keyword in keyword_dict.get("keyword_group"):
                     self.time_per_keyword[keyword] = 0
+        self.start_flush_thread_if_needed()
+
 
     def _find_starting_pattern(self, log):
         """
@@ -163,17 +155,16 @@ class LogProcessor:
 
         sorted_patterns = sorted(self.patterns_count.items(), key=lambda x: x[1], reverse=True)
         threshold = max(5, int(self.line_count * 0.075))
-
+        
         for pattern, count in sorted_patterns:
             if pattern not in self.patterns and count > threshold:
                 self.patterns.append(pattern)
-                self.logger.debug(f"{self.entity_name}: Found pattern: {pattern} with {count} matches of {self.line_count} lines. {round(count / self.line_count * 100, 2)}%")
+                self.logger.debug(f"{self.unit_name}: Found pattern: {pattern} with {count} matches of {self.line_count} lines. {round(count / self.line_count * 100, 2)}%")
                 self.valid_pattern = True
-        if self.patterns == []:
-            self.valid_pattern = False
+                self.start_flush_thread_if_needed()
         if self.line_count >= self.line_limit:
             if self.patterns == []:
-                self.logger.info(f"{self.entity_name}: No pattern found in logs after {self.line_limit} lines. Mode: single-line")
+                self.logger.info(f"{self.unit_name}: No pattern found in logs after {self.line_limit} lines. Mode: single-line")
 
         self.waiting_for_pattern = False
 
@@ -181,7 +172,7 @@ class LogProcessor:
         """
         Merge container-level message config into keyword-level config for a single message.
         """
-        for key, value in self.container_message_config.items():
+        for key, value in self.container_msg_cnf.items():
             if key not in keyword_message_config:
                 keyword_message_config[key] = value
             elif isinstance(value, list) and isinstance(keyword_message_config.get(key), list):
@@ -199,32 +190,36 @@ class LogProcessor:
         else:
             if self.line_count < self.line_limit:
                 self._find_starting_pattern(clean_line)
-            if self.valid_pattern == True:
+            if self.valid_pattern is True:
                 self._process_multi_line(clean_line)
             else:
                 self._search_and_send(clean_line)
 
-    def _start_flush_thread(self):
+    def start_flush_thread_if_needed(self):
         def check_flush():
             """
             Background thread: flushes buffer if timeout is reached or container stops.
             """
+            self.logger.debug(f"Flush Thread started for {self.unit_name} in Multi-Line Mode.")
             self.flush_thread_stopped.clear()
-            while True:
-                if self.entity_stop_event and self.entity_stop_event.is_set():
-                    time.sleep(4)
-                    if self.entity_stop_event.is_set():
-                        break
-                if self.multi_line_mode is False:
-                    break
-                with self.lock_buffer:
-                    if (time.time() - self.log_stream_last_updated > self.log_stream_timeout) and self.buffer:
-                        self._handle_and_clear_buffer()
-                time.sleep(1)
+            while not self.unit_stop_event.is_set():
+                # Wait for new line event to be set but check every 60 seconds if the unit is stopped
+                self.new_line_event.wait(60)
+                if not self.new_line_event.is_set():
+                    continue
+                # Check if buffer needs to be flushed after one second passed since last log line
+                while True:
+                    time.sleep(1)
+                    with self.lock_buffer:
+                        if (time.time() - self.log_stream_last_updated > 1) or self.unit_stop_event.is_set():
+                            if self.buffer:
+                                self._handle_and_clear_buffer()
+                                self.new_line_event.clear()
+                            break
             self.flush_thread_stopped.set()
-            self.logger.debug(f"Flush Thread stopped for Container {self.entity_name}")
+            self.logger.debug(f"Flush Thread stopped for {self.unit_name}")
 
-        if self.flush_thread_stopped.is_set():
+        if not self.unit_stop_event.is_set() and self.multi_line_mode and self.valid_pattern and self.flush_thread_stopped.is_set():
             self.flush_thread = Thread(target=check_flush, daemon=True)
             self.flush_thread.start()
 
@@ -232,7 +227,10 @@ class LogProcessor:
         """Flush buffer and process its contents as a single log entry."""
         log_entry = "\n".join(self.buffer)
         self.buffer.clear()
-        self._search_and_send(log_entry)
+        if log_entry.strip():
+            self._search_and_send(log_entry)
+        else:
+            self.logger.debug(f"Buffer for {self.unit_name} was empty, nothing to process.")
 
     def _process_multi_line(self, line):
         """
@@ -242,6 +240,8 @@ class LogProcessor:
         # Wait if pattern detection is in progress
         while self.waiting_for_pattern is True:
             time.sleep(1)
+        # Check if the line matches any start pattern
+        self.log_stream_last_updated = time.time()
         with self.lock_buffer:
             for pattern in self.patterns:
                 # If line matches a start pattern, flush buffer and start new entry
@@ -258,6 +258,8 @@ class LogProcessor:
                     # Fallback: unexpected format, start new buffer
                     self.buffer.append(line)
         self.log_stream_last_updated = time.time()
+        self.new_line_event.set()
+
 
     def _search_keyword(self, log_line, keyword_dict, ignore_keyword_time=False):
         """
@@ -267,26 +269,26 @@ class LogProcessor:
         if keyword_dict.get("notification_cooldown"):
             notification_cooldown = keyword_dict["notification_cooldown"]
         else:
-            notification_cooldown = self.container_message_config.get("notification_cooldown", 10)
-            
+            notification_cooldown = self.container_msg_cnf.get("notification_cooldown", 10)
+        log_line = log_line.lower()
         if "regex" in keyword_dict:
-            regex = keyword_dict.get("regex")
+            regex = keyword_dict["regex"]
             if ignore_keyword_time or time.time() - self.time_per_keyword.get(regex, 0) >= int(notification_cooldown):
                 match = re.search(regex, log_line, re.IGNORECASE)
                 if match:
                     self.time_per_keyword[regex] = time.time()
-                    hide_pattern = keyword_dict.get("hide_regex_in_title") if keyword_dict.get("hide_regex_in_title") else self.container_message_config["hide_regex_in_title"]
+                    hide_pattern = keyword_dict.get("hide_regex_in_title") if keyword_dict.get("hide_regex_in_title") else self.container_msg_cnf["hide_regex_in_title"]
                     return "Regex-Pattern" if hide_pattern else f"Regex: {regex}"
         elif "keyword" in keyword_dict:
-            keyyword = keyword_dict.get("keyword")
-            if ignore_keyword_time or time.time() - self.time_per_keyword.get(keyyword, 0) >= int(notification_cooldown):
-                if keyyword.lower() in log_line.lower():
-                    self.time_per_keyword[keyyword] = time.time()
-                    return keyyword
+            keyword = keyword_dict["keyword"]
+            if ignore_keyword_time or time.time() - self.time_per_keyword.get(keyword, 0) >= int(notification_cooldown):
+                if keyword.lower() in log_line:
+                    self.time_per_keyword[keyword] = time.time()
+                    return keyword
         elif "keyword_group" in keyword_dict:
-            keyword_group = keyword_dict.get("keyword_group")
+            keyword_group = keyword_dict["keyword_group"]
             if ignore_keyword_time or time.time() - self.time_per_keyword.get(keyword_group, 0) >= int(notification_cooldown):
-                if all(keyword.lower() in log_line.lower() for keyword in keyword_group):
+                if all(keyword.lower() in log_line for keyword in keyword_group):
                     self.time_per_keyword[keyword_group] = time.time()
                     return keyword_group
         return None
@@ -297,73 +299,72 @@ class LogProcessor:
         If a keyword is found, trigger notification and/or container action.
         """
         keywords_found = []
-        excluded_keywords = self.entity_config.excluded_keywords if self.entity_config.excluded_keywords else []
-        keyword_message_config = {"message": log_line, "entity_name": self.entity_name, "monitor_type": self.monitor_type.value}
+        keyword_msg_cnf = {"message": log_line, "unit_name": self.unit_name, "monitor_type": self.monitor_type.value, "excluded_keywords": []}
         template_found = False
         for keyword_dict in self.keywords:
             found = self._search_keyword(log_line, keyword_dict)
             if found:
                 if template_found is False and keyword_dict.get("template") or keyword_dict.get("json_template"):
                     template_found = True
-                    keyword_message_config["message"] = message_from_template(keyword_dict, log_line)
-                if keyword_dict.get("excluded_keywords"):
-                    excluded_keywords.extend(keyword_dict["excluded_keywords"])
+                    keyword_msg_cnf["message"] = message_from_template(keyword_dict, log_line)
                 for key, value in keyword_dict.items():
-                    if not keyword_message_config.get(key) and value is not None:
-                        keyword_message_config[key] = value
+                    if key == "excluded_keywords" and isinstance(value, list):
+                        keyword_msg_cnf["excluded_keywords"].extend(value)
+                    elif not keyword_msg_cnf.get(key) and value is not None:
+                        keyword_msg_cnf[key] = value
                 keywords_found.append(found)
 
         if not keywords_found:
             return
         # When an excluded keyword is found, the log line gets ignored and the function returns
-        if excluded_keywords:
-            for keyword in self._get_keywords(excluded_keywords):
+        if exc := (keyword_msg_cnf.get("excluded_keywords") or []) + (self.container_msg_cnf.get("excluded_keywords") or []):
+            for keyword in self._get_keywords(exc):
                 found = self._search_keyword(log_line, keyword, ignore_keyword_time=True)
                 if found:
-                    self.logger.debug(f"Keyword(s) '{keywords_found}' found in '{self.entity_name} but IGNORED because excluded keyword '{found}' was found")
+                    self.logger.debug(f"Keyword(s) '{keywords_found}' found in '{self.unit_name}' but ignored because excluded keyword '{found}' was found")
                     return
 
-        keyword_message_config["keywords_found"] = keywords_found
-        action_to_perform = keyword_message_config.get("action")
+        keyword_msg_cnf["keywords_found"] = keywords_found
+        action_to_perform = keyword_msg_cnf.get("action")
         action_result = None
-        if self.monitor_type == MonitorType.CONTAINER and action_to_perform is not None:
+        if action_to_perform is not None:
             if self.last_action_time is None or (self.last_action_time is not None and time.time() - self.last_action_time >= int(self.action_cooldown)):
-                action_result = self._container_action(action_to_perform) # returns success, container_name, action_name
+                action_result = self._container_action(action_to_perform) # returns result as a string that can be used in a notification title
                 self.last_action_time = time.time()
             else:
-                last_action_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.last_action_time))
-                self.logger.debug(f"Action '{action_to_perform}' for {self.entity_name} is on cooldown. Last action was at {last_action_time}. Cooldown is {self.action_cooldown} seconds.")
+                last_action_time = time.strftime("%H:%M:%S", time.localtime(self.last_action_time))
+                self.logger.info(f"Action for {self.unit_name} is on cooldown. Not performing action:'{action_to_perform}'. Last action was at {last_action_time}. Cooldown is {self.action_cooldown} seconds.")
 
-        message_config = self.get_message_config(keyword_message_config)
+        msg_cnf = self.get_message_config(keyword_msg_cnf)
         attachment = None
-        if message_config["attach_logfile"]:
-            if result := self._log_attachment(message_config["attachment_lines"]):
+        if msg_cnf["attach_logfile"]:
+            if result := self._log_attachment(msg_cnf["attachment_lines"]):
                 attachment = {"content": result[0], "file_name": result[1]}
             else:
-                self.logger.error(f"Could not create log attachment file for Container {self.entity_name}")
+                self.logger.error(f"Could not create log attachment file for Container {self.unit_name}")
             
         formatted_log_entry ="\n  -----  LOG-ENTRY  -----\n" + ' | ' + '\n | '.join(log_line.splitlines()) + "\n   -----------------------"
-        self.logger.info(f"The following keywords were found in {self.entity_name}: {keywords_found}."
+        self.logger.info(f"The following keywords were found in {self.unit_name}: {keywords_found}."
                     + (f" (A Log FIle will be attached)" if attachment else "")
                     + f"{formatted_log_entry}"
                     )
-        title = get_notification_title(message_config, action_result)
-        self._send_message(title, message_config["message"], message_config, attachment=attachment)
+        title = get_notification_title(msg_cnf, action_result)
+        self._send_message(title, msg_cnf["message"], msg_cnf, attachment=attachment)
 
-        if message_config.get("olivetin_action_id"):
-            title, message = perform_olivetin_action(self.config, message_config, message_config["olivetin_action_id"])
-            self._send_message(title, message, message_config)
+        if msg_cnf.get("olivetin_action_id"):
+            title, message = perform_olivetin_action(self.config, msg_cnf, msg_cnf["olivetin_action_id"])
+            self._send_message(title, message, msg_cnf)
 
-    def _send_message(self, title, message, message_config, attachment=None):
+    def _send_message(self, title, message, msg_cnf, attachment=None):
         """
         Format notification title and call send_notification(). Optionally attach log file.
         """
         send_notification(self.config,
-                        entity_name=self.entity_name,
+                        unit_name=self.unit_name,
                         title=title,
                         message=message,
-                        message_config=message_config,
-                        container_config=self.entity_config,
+                        message_config=msg_cnf,
+                        unit_config=self.unit_config,
                         attachment=attachment,
                         hostname=self.hostname)
 
@@ -372,27 +373,23 @@ class LogProcessor:
         Write the last N lines of container logs to a temporary file for notification attachment.
         Returns the file path or None on error.
         """
-        file_name = f"last_{number_attachment_lines}_lines_from_{self.entity_name}.log"
+        file_name = f"last_{number_attachment_lines}_lines_from_{self.unit_name}.log"
         try:
-            log_tail = self.monitor_instance.tail_logs(entity_name=self.entity_name, 
+            log_tail = self.monitor_instance.tail_logs(unit_name=self.unit_name, 
                                                        monitor_type=self.monitor_type, 
                                                        lines=number_attachment_lines)
             if log_tail:
                 return log_tail, file_name
         except Exception as e:
-            self.logger.error(f"Could not create log attachment file for Container {self.entity_name}: {e}")
+            self.logger.error(f"Could not create log attachment file for Container {self.unit_name}: {e}")
             return None, None
 
     def _container_action(self, action: str) -> Optional[str]:
         """
-        Perform the specified container action (stop or restart). Returns True on success, False on error.
+        Perform the specified container action (stop, start or restart). Returns result as a string that can be used in a notification title.
         syntax is 'action' or 'action@container_name'
         """
-        if not self.monitor_type == MonitorType.CONTAINER:
-            self.logger.error(f"Action not allowed for {self.entity_name} because it is of the type {self.monitor_type.value}.")
-            return None
-        # Validate that action is a supported action
-        result = self.monitor_instance.container_action(self.monitor_type, self.entity_name, action)
+        result = self.monitor_instance.container_action(self.monitor_type, self.unit_name, action)
         return result
 
 
@@ -403,7 +400,7 @@ def get_notification_title(message_config: dict, action_result: Optional[str] = 
     title = ""
     keywords_found = message_config.get("keywords_found", "")
     notification_title = message_config.get("notification_title", "default")
-    entity_name = message_config.get("entity_name", "") 
+    unit_name = message_config.get("unit_name", "") 
 
     if notification_title.strip().lower() != "default":
         template = ""
@@ -411,7 +408,7 @@ def get_notification_title(message_config: dict, action_result: Optional[str] = 
             keywords = ', '.join(f"'{word}'" for word in keywords_found)
             template = notification_title.strip()
             template_fields = {
-                "container": entity_name,
+                "container": unit_name,
                 "keywords": keywords, 
                 "keyword": keywords, 
             }
@@ -424,19 +421,19 @@ def get_notification_title(message_config: dict, action_result: Optional[str] = 
     if not title and isinstance(keywords_found, list):
         if len(keywords_found) == 1:
             keyword = keywords_found[0]
-            title = f"'{keyword}' found in {entity_name}"
+            title = f"'{keyword}' found in {unit_name}"
         elif len(keywords_found) == 2:
             joined_keywords = ' and '.join(f"'{word}'" for word in keywords_found)
-            title = f"{joined_keywords} found in {entity_name}"
+            title = f"{joined_keywords} found in {unit_name}"
         elif len(keywords_found) > 2:
             joined_keywords = ', '.join(f"'{word}'" for word in keywords_found)
-            title = f"The following keywords were found in {entity_name}: {joined_keywords}"
+            title = f"The following keywords were found in {unit_name}: {joined_keywords}"
 
     if action_result is not None:
         title = f"{title} ({action_result})"
 
     if not title:
-        title = f"{entity_name}: {keywords_found}"
+        title = f"{unit_name}: {keywords_found}"
 
     return title
 

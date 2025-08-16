@@ -88,7 +88,10 @@ def load_config(official_path="/config/config.yaml"):
         "action_cooldown": os.getenv("ACTION_COOLDOWN"),
         "attach_logfile": os.getenv("ATTACH_LOGFILE", "false").lower() == "true",
         "hide_regex_in_title": os.getenv("HIDE_REGEX_IN_TITLE", "false").lower() == "true",
-        "excluded_keywords": [kw.strip() for kw in os.getenv("EXCLUDED_KEYWORDS", "").split(",") if kw.strip()] if os.getenv("EXCLUDED_KEYWORDS") else None
+        "excluded_keywords": [kw.strip() for kw in os.getenv("EXCLUDED_KEYWORDS", "").split(",") if kw.strip()] if os.getenv("EXCLUDED_KEYWORDS") else None,
+        "olivetin_url": os.getenv("OLIVETIN_URL"),
+        "olivetin_username": os.getenv("OLIVETIN_USERNAME"),
+        "olivetin_password": os.getenv("OLIVETIN_PASSWORD"),
         } 
     ntfy_values =  {
         "url": os.getenv("NTFY_URL"),
@@ -123,13 +126,6 @@ def load_config(official_path="/config/config.yaml"):
             s = s.strip()
             env_config["swarm_services"][s] = {}
 
-    if os.getenv("SYSTEMD_SERVICES"):
-        env_config["systemd_services"] = {}
-        for c in os.getenv("SYSTEMD_SERVICES", "").split(","):
-            c = c.strip()
-            env_config["systemd_services"][c] = {}
-
-
     if any(ntfy_values.values()):
         env_config["notifications"]["ntfy"] = ntfy_values
         yaml_config["notifications"]["ntfy"] = {} if yaml_config["notifications"].get("ntfy") is None else yaml_config["notifications"]["ntfy"]
@@ -159,7 +155,7 @@ def load_config(official_path="/config/config.yaml"):
 
     return config, config_path
 
-def validate_entity_config(monitor_type, config_dict):
+def validate_unit_config(monitor_type, config_dict):
     try:
         if monitor_type == MonitorType.SWARM:
             return SwarmServiceConfig.model_validate(config_dict)

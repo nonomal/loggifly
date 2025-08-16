@@ -6,14 +6,14 @@ import base64
 import logging
 from pydantic import SecretStr
 import urllib.parse
-from config.config_model import GlobalConfig
+from config.config_model import GlobalConfig, ContainerConfig, SwarmServiceConfig
 
 logging.getLogger(__name__)
 
-def get_ntfy_config(config, message_config, container_config):
+def get_ntfy_config(config: GlobalConfig, message_config, unit_config) -> dict:
     """
     Aggregate ntfy notification configuration from global, container, and message-specific sources.
-    Precedence: message_config > container_config > global_config.
+    Precedence: message_config > unit_config > global_config.
     Handles secret values and authorization header construction.
     """
     ntfy_config = {
@@ -28,15 +28,15 @@ def get_ntfy_config(config, message_config, container_config):
     }
 
     global_config = config.notifications.ntfy.model_dump(exclude_none=True) if config.notifications.ntfy else {}
-    container_config = container_config.model_dump(exclude_none=True) if container_config else {}
+    unit_config_dict = unit_config.model_dump(exclude_none=True) if unit_config else {}
     message_config = message_config if message_config else {}
 
     for key in ntfy_config.keys():
         ntfy_key = "ntfy_" + key
         if message_config.get(ntfy_key) is not None:
             ntfy_config[key] = message_config.get(ntfy_key)
-        elif container_config.get(ntfy_key) is not None:
-            ntfy_config[key] = container_config.get(ntfy_key)
+        elif unit_config_dict.get(ntfy_key) is not None:
+            ntfy_config[key] = unit_config_dict.get(ntfy_key)
         elif global_config.get(key) is not None:
             ntfy_config[key] = global_config.get(key)
 
@@ -53,22 +53,22 @@ def get_ntfy_config(config, message_config, container_config):
     return ntfy_config
 
 
-def get_apprise_url(config, message_config, container_config):
+def get_apprise_url(config: GlobalConfig, message_config, unit_config) -> str | None:
     """
     Retrieve the Apprise notification URL from message, container, or global config.
-    Precedence: message_config > container_config > global_config.
+    Precedence: message_config > unit_config > global_config.
     Handles secret values.
     """
     apprise_url = None
     global_config = config.notifications.apprise.model_dump(exclude_none=True) if config.notifications.apprise else {}
-    container_config = container_config.model_dump(exclude_none=True) if container_config else {}
+    unit_config_dict = unit_config.model_dump(exclude_none=True) if unit_config else {}
     message_config = message_config if message_config else {}
 
 
     if message_config.get("apprise_url"):
         apprise_url = message_config.get("apprise_url")
-    elif container_config.get("apprise_url"):
-        apprise_url = container_config.get("apprise_url")
+    elif unit_config_dict.get("apprise_url"):
+        apprise_url = unit_config_dict.get("apprise_url")
     elif global_config.get("url"):
         apprise_url = global_config.get("url")
 
@@ -77,29 +77,29 @@ def get_apprise_url(config, message_config, container_config):
     return apprise_url
 
 
-def get_webhook_config(config, message_config, container_config):
+def get_webhook_config(config: GlobalConfig, message_config, unit_config) -> dict:
     """
     Aggregate webhook configuration from global, container, and message-specific sources.
-    Precedence: message_config > container_config > global_config.
+    Precedence: message_config > unit_config > global_config.
     """
     webhook_config = {"url": None, "headers": {}}
 
     global_config = config.notifications.webhook.model_dump(exclude_none=True) if config.notifications.webhook else {}
-    container_config = container_config.model_dump(exclude_none=True) if container_config else {}
+    unit_config_dict = unit_config.model_dump(exclude_none=True) if unit_config else {}
     message_config = message_config if message_config else {}
 
     for key in webhook_config.keys():
         webhook_key = "webhook_" + key
         if message_config.get(webhook_key) is not None:
             webhook_config[key] = message_config.get(webhook_key)
-        elif container_config.get(webhook_key) is not None:
-            webhook_config[key] = container_config.get(webhook_key)
+        elif unit_config_dict.get(webhook_key) is not None:
+            webhook_config[key] = unit_config_dict.get(webhook_key)
         elif global_config.get(key) is not None:
             webhook_config[key] = global_config.get(key)
     return webhook_config
 
 
-def send_apprise_notification(url, message, title, attachment=None):
+def send_apprise_notification(url, message, title, attachment: dict | None = None):
     """
     Send a notification using Apprise.
     Optionally attaches a file. Message is truncated if too long.
@@ -137,7 +137,7 @@ def send_apprise_notification(url, message, title, attachment=None):
         logging.error("Error while trying to send apprise-notification: %s", e)
 
 
-def send_ntfy_notification(ntfy_config, message, title, attachment=None, file_name=None):
+def send_ntfy_notification(ntfy_config, message, title, attachment: dict | None =None):
     """
     Send a notification via ntfy with optional file attachment.
     Handles authorization and message truncation.
@@ -183,11 +183,11 @@ def send_ntfy_notification(ntfy_config, message, title, attachment=None, file_na
         logging.error("Error while trying to connect to ntfy: %s", e)
 
 
-def send_webhook(json_data, webhook_config):
+def send_webhook(json_data: dict, webhook_config: dict):
     """
     Send a POST request to a custom webhook with the provided JSON payload and headers.
     """
-    url, headers = webhook_config.get("url"), webhook_config.get("headers", {})
+    url, headers = webhook_config.get("url", ""), webhook_config.get("headers", {})
     try:
         response = requests.post(
             url=url,
@@ -205,36 +205,37 @@ def send_webhook(json_data, webhook_config):
 
 
 def send_notification(config: GlobalConfig, 
-                      entity_name, 
-                      title, 
-                      message,
-                      message_config=None, 
-                      container_config=None,
-                      attachment=None,
-                      hostname=None):
+                      unit_name: str, 
+                      title: str, 
+                      message: str,
+                      message_config: dict | None = None, 
+                      unit_config: ContainerConfig | SwarmServiceConfig | None = None,
+                      attachment: dict | None = None,
+                      hostname: str | None = None):
     """
     Dispatch a notification using ntfy, Apprise, and/or webhook based on configuration.
     Handles message formatting, file attachments, and host labeling.
     """
     message = message.replace(r"\n", "\n").strip() if message else ""
-    monitor_type = message_config.get("monitor_type", "container") if message_config else "container"
+    monitor_type: str = message_config.get("monitor_type", "") if message_config else ""
 
     # If multiple hosts are set, prepend hostname to title
     title = f"[{hostname}] - {title}" if hostname else title
 
-    ntfy_config = get_ntfy_config(config, message_config, container_config)
+    ntfy_config = get_ntfy_config(config, message_config, unit_config)
     if (ntfy_config and ntfy_config.get("url") and ntfy_config.get("topic")):
         send_ntfy_notification(ntfy_config, message=message, title=title, attachment=attachment)
 
-    apprise_url = get_apprise_url(config, message_config, container_config)
+    apprise_url = get_apprise_url(config, message_config, unit_config)
     if apprise_url:
         send_apprise_notification(apprise_url, message=message, title=title, attachment=attachment)
 
-    webhook_config = get_webhook_config(config, message_config, container_config)
+    webhook_config = get_webhook_config(config, message_config, unit_config)
     if (webhook_config and webhook_config.get("url")):
         keywords = message_config.get("keywords_found", None) if message_config else None
         json_data = {
-            monitor_type: entity_name,
+            "monitor_type": monitor_type,
+            "unit_name": unit_name,
             "keywords": keywords,
             "title": title,
             "message": message,
