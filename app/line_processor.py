@@ -194,7 +194,7 @@ class LogProcessor:
             """
             Background thread: flushes buffer if timeout is reached or container stops.
             """
-            self.logger.debug(f"Flush Thread started for {self.unit_name} in Multi-Line Mode.")
+            self.logger.debug(f"Flush Thread started for {self.unit_name}.")
             self.flush_thread_stopped.clear()
             while not self.unit_stop_event.is_set():
                 # Wait for new line event to be set but check every 60 seconds if the unit is stopped
@@ -386,7 +386,7 @@ class LogProcessor:
 
     def _container_action(self, action: str) -> Optional[str]:
         """
-        Perform the specified container action (stop, start or restart). Returns result as a string that can be used in a notification title.
+        Perform the specified container action (stop, start or restart). Returns result as a string that can be used in notification title.
         syntax is 'action' or 'action@container_name'
         """
         result = self.monitor_instance.container_action(self.monitor_type, self.unit_name, action)

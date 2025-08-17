@@ -51,7 +51,7 @@ class Settings(BaseConfigModel):
     disable_notifications: Optional[bool] = None
     olivetin_url: Optional[str] = None
     olivetin_username: Optional[str] = None
-    olivetin_password: Optional[str] = None
+    olivetin_password: Optional[SecretStr] = None
     
 class ModularSettings(BaseConfigModel):
     """
