@@ -2,6 +2,7 @@ import requests
 import logging
 import threading
 from config.config_model import GlobalConfig
+from pydantic import SecretStr
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,6 @@ class OlivetinAction:
             return False
         
     def trigger_action(self, url, action_id, username=None, password=None) -> dict | None:
-        logger.debug(f"Olivetin config: {url}, {username}, {password}")
         auth_cookie = None
         if username and password:
             auth_cookie = self.get_auth_cookie(url, username, password)
@@ -70,18 +70,17 @@ class OlivetinAction:
         try:
             action_url = f"{url}/api/StartActionByGetAndWait/{action_id}"
             cookies = {"olivetin-sid-local": auth_cookie} if auth_cookie else None
-            logger.debug(f"Action URL: {action_url}, cookies: {cookies}")
             action_response = requests.get(
                 url=action_url,
                 cookies=cookies
             )
             if action_response.status_code == 200:
-                logger.info("Olivetin action triggered successfully")
+                logger.debug("Successfully established connection to Olivetin")
             else:
                 logger.error(f"Olivetin action request failed: {action_response.status_code} - {action_response.text}")
             try:
                 data = action_response.json()
-                logger.debug(f"Action Response: {data}")
+                logger.info(f"Action Response: {data}")
                 return data
             except ValueError:
                 logger.error("Invalid JSON response from Olivetin")
@@ -97,6 +96,8 @@ def perform_olivetin_action(config: GlobalConfig, message_config, action_id) -> 
     url = message_config.get("olivetin_url", "").strip() or config.settings.olivetin_url or None
     username = message_config.get("olivetin_username", "").strip() or config.settings.olivetin_username or None
     password = message_config.get("olivetin_password", "").strip() or config.settings.olivetin_password or None
+    if password and isinstance(password, SecretStr):
+        password = password.get_secret_value()
     global _olivetin_action, _lock
     with _lock:
         if _olivetin_action is None:
@@ -108,9 +109,13 @@ def perform_olivetin_action(config: GlobalConfig, message_config, action_id) -> 
         action_title = log_entry.get("actionTitle", "unknown action")
         action_icon = log_entry.get("actionIcon", "")
         message = "Output:\n" + log_entry.get("output", "")
-        if log_entry.get("executionFinished") == True:
+        if (log_entry.get("executionStarted") is True 
+        and log_entry.get("executionFinished") is True 
+        and log_entry.get("blocked") is False):
+            logger.info(f"Olivetin Action was run successfully: {action_icon} {action_title}")
             title = f"Olivetin Action was run: {action_icon} {action_title}"
         else:
+            logger.error(f"Olivetin Action failed: {action_icon} {action_title}")
             title = f"Olivetin action failed: {action_icon} {action_title}"
         return title, message
 
