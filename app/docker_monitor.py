@@ -531,10 +531,14 @@ class DockerLogMonitor:
                             container = self.client.containers.get(container_id)
                             if self._maybe_monitor_container(container):
                                 if self.config.settings.disable_container_event_message is False:
-                                    send_notification(self.config, "Loggifly", "LoggiFly", f"Monitoring new container: {container.name}", hostname=self.hostname)
+                                    if ctx := self._registry.get_by_id(container.id):
+                                        unit_name = ctx.unit_name
+                                    else:
+                                        unit_name = container_name
+                                    send_notification(self.config, "Loggifly", "LoggiFly", f"Monitoring new container: {unit_name}", hostname=self.hostname)
                         elif event.get("Action") == "stop":
                             if self._registry.get_by_id(container_id):
-                                self.logger.info(f"The Container {container_name or container_id} was stopped. Stopping Monitoring now.")
+                                self.logger.debug(f"The Container {container_name or container_id} was stopped. Stopping Monitoring now.")
                                 self._close_stream_connection(container_id)
 
                 except docker.errors.NotFound as e:
@@ -637,6 +641,9 @@ class DockerLogMonitor:
             container = self.client.containers.get(container_name)
             if get_service_info(container, self.client):
                 self.logger.error(f"Container {container_name} belongs to a swarm service. Cannot perform action: {action}")
+                return None
+            if socket.gethostname() == container.id[:12]:
+                self.logger.warning("LoggiFly can not perform actions on itself. Skipping.")
                 return None
         except docker.errors.NotFound:
             self.logger.error(f"Container {container_name} not found. Could not perform action: {action}")

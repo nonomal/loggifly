@@ -113,9 +113,9 @@ def perform_olivetin_action(config: GlobalConfig, message_config, action_id) -> 
         and log_entry.get("executionFinished") is True 
         and log_entry.get("blocked") is False):
             logger.info(f"Olivetin Action was run successfully: {action_icon} {action_title}")
-            title = f"Olivetin Action was run: {action_icon} {action_title}"
+            title = f"Olivetin Action '{action_icon} {action_title}' was run successfully"
         else:
             logger.error(f"Olivetin Action failed: {action_icon} {action_title}")
-            title = f"Olivetin action failed: {action_icon} {action_title}"
+            title = f"Olivetin action '{action_icon} {action_title}' failed"
         return title, message
 

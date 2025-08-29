@@ -108,10 +108,10 @@ class LogProcessor:
         """
         self.config = config
         self.unit_config = unit_config
-        self.keywords = self._get_keywords(self.config.global_keywords.keywords)        
         self.time_per_keyword = {}
         unt_cnf = self.unit_config.model_dump() if self.unit_config else {}
-        self.keywords.extend(self._get_keywords(unt_cnf.get("keywords", [])))
+        self.keywords = self._get_keywords(unt_cnf.get("keywords", []))
+        self.keywords.extend(self._get_keywords(self.config.global_keywords.keywords))        
 
         self.container_msg_cnf = {
             "attachment_lines": unt_cnf.get("attachment_lines") or config.settings.attachment_lines,
@@ -293,7 +293,8 @@ class LogProcessor:
         If a keyword is found, trigger notification and/or container action.
         """
         keywords_found = []
-        keyword_msg_cnf = {"message": log_line, "unit_name": self.unit_name, "monitor_type": self.monitor_type.value, "excluded_keywords": []}
+        excluded_keywords = []
+        keyword_msg_cnf = {"message": log_line, "unit_name": self.unit_name, "monitor_type": self.monitor_type.value}
         template_found = False
         for keyword_dict in self.keywords:
             found = self._search_keyword(log_line, keyword_dict)
@@ -303,7 +304,7 @@ class LogProcessor:
                     keyword_msg_cnf["message"] = message_from_template(keyword_dict, log_line)
                 for key, value in keyword_dict.items():
                     if key == "excluded_keywords" and isinstance(value, list):
-                        keyword_msg_cnf["excluded_keywords"].extend(value)
+                        excluded_keywords.extend(value)
                     elif not keyword_msg_cnf.get(key) and value is not None:
                         keyword_msg_cnf[key] = value
                 keywords_found.append(found)
@@ -311,7 +312,7 @@ class LogProcessor:
         if not keywords_found:
             return
         # When an excluded keyword is found, the log line gets ignored and the function returns
-        if exc := (keyword_msg_cnf.get("excluded_keywords") or []) + (self.container_msg_cnf.get("excluded_keywords") or []):
+        if exc := excluded_keywords + (self.container_msg_cnf.get("excluded_keywords") or []):
             for keyword in self._get_keywords(exc):
                 found = self._search_keyword(log_line, keyword, ignore_keyword_time=True)
                 if found:
@@ -344,8 +345,8 @@ class LogProcessor:
                     )
         disable_notifications = msg_cnf.get("disable_notifications") or self.container_msg_cnf.get("disable_notifications") or False
         if disable_notifications:
-            self.logger.info(f"Not sending notification for {self.unit_name} because it is disabled..")
-            return
+            self.logger.info(f"Not sending notification for {self.unit_name} because notifications are disabled.")
+
         if not disable_notifications:
             title = get_notification_title(msg_cnf, action_result)
             self._send_message(title, msg_cnf["message"], msg_cnf, attachment=attachment)
