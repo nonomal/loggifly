@@ -52,7 +52,10 @@ class Settings(BaseConfigModel):
     olivetin_url: Optional[str] = None
     olivetin_username: Optional[str] = None
     olivetin_password: Optional[SecretStr] = None
-    
+
+    @field_validator("action_cooldown", mode="before")
+    def validate_action_cooldown(cls, v):
+        return validate_action_cooldown(v)
 class ModularSettings(BaseConfigModel):
     """
     Optional settings that can be overridden per keyword or container.
@@ -79,11 +82,17 @@ class ModularSettings(BaseConfigModel):
 
     olivetin_url: Optional[str] = None
     olivetin_username: Optional[str] = None
-    olivetin_password: Optional[str] = None
+    olivetin_password: Optional[SecretStr] = None
 
     @field_validator("ntfy_priority", mode="before")
     def validate_priority(cls, v):
         return validate_priority(v)
+
+    @field_validator("action_cooldown", mode="before")
+    def validate_action_cooldown(cls, v):
+        if v is None:
+            return None
+        return validate_action_cooldown(v)
 
 class KeywordItemBase(ModularSettings):
     json_template: Optional[str] = None
@@ -257,6 +266,12 @@ class GlobalConfig(BaseConfigModel):
         if not all_keywords:
             raise ValueError("No keywords configured. You have to set keywords either per container or globally.")
         return self
+
+def validate_action_cooldown(v):
+    if v is not None and v < 10:
+        logging.warning("Action cooldown must be at least 10 seconds. Setting to 10 seconds")
+        return 10
+    return v
 
 
 def validate_priority(v):
