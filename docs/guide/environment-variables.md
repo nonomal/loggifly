@@ -27,10 +27,14 @@ Except for container / keyword specific settings and regex patterns a lot of the
 | `ATTACHMENT_LINES`              | Define the number of Log Lines in the attachment file     | 20     |
 | `NOTIFICATION_COOLDOWN`         | Cooldown period (in seconds) per container per keyword before a new message can be sent  | 5        | 
 | `ACTION_COOLDOWN`         | Cooldown period (in seconds) before the next container action can be performed. Always at least 60s. (`action_keywords` are only configurable in YAML)  | 300        |
+| `OLIVETIN_URL`         | URL of your OliveTin instance. | _N/A_        |
+| `OLIVETIN_USERNAME`         | Username for your OliveTin instance. | _N/A_        |
+| `OLIVETIN_PASSWORD`         | Password for your OliveTin instance. | _N/A_        |
 | `LOG_LEVEL`                     | Log Level for LoggiFly container logs.                    | INFO     |
 | `MULTI_LINE_ENTRIES`            | When enabled the program tries to catch log entries that span multiple lines.<br>If you encounter bugs or you simply don't need it you can disable it.| True     |
 | `HIDE_REGEX_IN_TITLE`         | Exclude regex from the notification title for a cleaner look. Useful when using very long regexes.| False     |
 | `RELOAD_CONFIG`               | When the config file is changed the program reloads the config | True  |
+| `DISABLE_NOTIFICATIONS`       | Disable notifications when keywords are found. Useful when you only want to trigger actions.                                  | False     |
 | `DISABLE_START_MESSAGE`          | Disable startup message.                                  | False     |
 | `DISABLE_SHUTDOWN_MESSAGE`       | Disable shutdown message.                                 | False     |
 | `DISABLE_CONFIG_RELOAD_MESSAGE`       | Disable message when the config file is reloaded.| False     |

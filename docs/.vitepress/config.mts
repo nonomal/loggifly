@@ -35,10 +35,10 @@ export default defineConfig({
       {
         text: 'Configuration',
         items: [
-          { text: 'Config Structure', link: '/guide/config-structure' },
-          { text: 'Config Sections',
+          { text: 'Configuration Walkthrough',
             collapsed: true,
             items: [
+              { text: 'Overview', link: '/guide/config_sections/' },
               { text: 'Settings', link: '/guide/config_sections/settings' },
               { text: 'Notifications', link: '/guide/config_sections/notifications' },
               { text: 'Containers', link: '/guide/config_sections/containers' },
@@ -46,8 +46,13 @@ export default defineConfig({
 
             ]
           },
-          { text: 'Settings Overview & Priority', link: '/guide/settings-overview' },
+          { text: 'Settings Overview', link: '/guide/settings-overview' },
           { text: 'Environment Variables', link: '/guide/environment-variables' },
+        ]
+      },
+      {
+        text: 'Advanced Features',
+        items: [
           { text: 'Customize Notifications',
             collapsed: true,
             items: [
@@ -56,12 +61,14 @@ export default defineConfig({
               { text: 'Plain Text Logs', link: '/guide/customize-notifications/template' },
             ]
           },
+          { text: 'Actions', link: '/guide/actions' },
           { text: 'Remote Hosts', link: '/guide/remote-hosts' },
         ]
       },
       {
         text: 'Other',
         items: [
+          { text: 'Examples', link: '/guide/examples' },
           { text: 'Tips & Troubleshooting', link: '/guide/tips' },
         ]
       },

@@ -11,11 +11,10 @@ containers:
   container1:
     keywords:
       - error               # simple keyword
-      - regex: \error\b.*   # this is how to set regex patterns
+      - regex: error\b.*   # this is how to set regex patterns
       - keyword: critical   # another way to set a simple keyword
     
 ```
-
 
 ## Attach Logfiles
 
@@ -33,38 +32,43 @@ containers:
       attach_logfile: true  # Attach a log file to the notification
 ```
 
-## Container Actions
-
-
-With the `action` option you can either `stop` or `restart` the container.
-
-```yaml
-containers:
-  container3:
-    - regex: \error\b.*
-      action: restart  # Restart the container when this regex is found
-    - keyword: critical
-      action: stop     # Stop the container when this keyword is found
-```
-
 ## Exclude Keywords
 
 You can also exclude certain keywords from triggering notifications. This can be done globally (in [`settings`](./settings.md)), per container or per keyword/regex. 
 
 ```yaml
 containers:
-  container4:
+  container3:
     # Exclude keywords for a whole container
     excluded_keywords:
       - timeout  # This keyword will be ignored for this container
       - regex: \btimeout\b.*  # This regex will be ignored for this container
     keywords:
       - error
-      - regex: \error\b.*
+      - regex: error\b.*
         # Exclude keywords for a specific keyword or regex pattern
         excluded_keywords:
-          - uncritical  # Log lines with '\error\b.*' and 'uncritical' will be ignored
+          - uncritical  # Log lines with 'error\b.*' and 'uncritical' will be ignored
 ```
+
+## Keyword Groups
+
+Keyword groups consist of a list of keywords that are treated as a group. A notification will be triggered when all of the keywords in the group are found in the log.
+
+```yaml
+containers:
+  container4:
+    keywords:
+      - keyword_group:
+        - error
+        - critical
+        - timeout
+        attach_logfile: true
+        notification_title: '{container}: That's a lot of errors!'
+
+
+```
+
 
 ## Settings per container and keyword
 
@@ -78,7 +82,7 @@ When multiple keywords with the same setting (e.g., `notification_title`) are fo
 
 ```yaml
 containers:
-  container2:
+  container5:
     apprise_url: "discord://webhook-url"  
     ntfy_tags: closed_lock_with_key   
     ntfy_priority: 3
@@ -93,7 +97,7 @@ containers:
     keywords:
       - critical
 
-      - regex: \error\b.*
+      - regex: error\b.*
         ntfy_tags: partying_face   
         ntfy_priority: 5
         ntfy_topic: error
@@ -118,10 +122,10 @@ If `global_keywords` are configured and you don't need additional keywords or se
   
 ```yaml
 containers:
-  container3:
-  container4:
+  container6:
+  container7:
 ```
 
 ::: info
-The only keyword settings missing here are the templates which are explained [here](../customize-notifications/).
+The only keyword settings missing here are the templates which are explained [here](../customize-notifications/) and the actions which are explained [here](../actions.md).
 :::
