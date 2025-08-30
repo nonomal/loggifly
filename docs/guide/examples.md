@@ -19,8 +19,7 @@ Feel free to contribute your use cases to [the file](https://github.com/clemcer/
 
 ## 🔍 Systemd Monitoring
 
-There once were plans to integrate systemd-monitoring into LoggiFly, but it was never implemented because it brought too many disadvantages. <br>
-However, you can still monitor systemd services / journal logs with LoggiFly by setting up a fluentbit container.
+You can monitor systemd services / journal logs with LoggiFly by setting up a fluentbit container.
 
 With this compose file journal logs are directly streamed to the fluentbit container logs where LoggiFly can then monitor them.
 
@@ -38,4 +37,5 @@ services:
       -o stdout -p match=* -p format=json_lines
     restart: unless-stopped
 ```
+
 

@@ -46,6 +46,7 @@ export default defineConfig({
 
             ]
           },
+          { text: 'Configuration via Labels', link: '/guide/config_sections/label-config' },
           { text: 'Settings Overview', link: '/guide/settings-overview' },
           { text: 'Environment Variables', link: '/guide/environment-variables' },
         ]
