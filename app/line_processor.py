@@ -88,17 +88,26 @@ class LogProcessor:
         returned_keywords = []
         for item in keywords:
             if isinstance(item, (KeywordItem)):
+                self.logger.debug(f"Keyword item: {item}")
                 returned_keywords.append((item.model_dump()))
             elif isinstance(item, RegexItem):
+                self.logger.debug(f"Regex item: {item}")
                 returned_keywords.append((item.model_dump()))
             elif isinstance(item, KeywordGroup):
+                self.logger.debug(f"Keyword group: {item}")
                 keyword_dict = item.model_dump()
                 keyword_dict["keyword_group"] = tuple(keyword_dict["keyword_group"])
+                self.logger.debug(f"Keyword dict: {keyword_dict}")
                 returned_keywords.append(keyword_dict)
             elif isinstance(item, str):
                 returned_keywords.append(({"keyword": item}))
+            elif isinstance(item, dict) and "keyword_group" in item:
+                item["keyword_group"] = tuple(item["keyword_group"])
+                returned_keywords.append(item)
             elif isinstance(item, dict) and ("keyword" in item or "regex" in item):
                 returned_keywords.append(item)
+            else:
+                self.logger.debug(f"Did not find correct item type for item: {item}")
         return returned_keywords
 
     def load_config_variables(self, config, unit_config):
