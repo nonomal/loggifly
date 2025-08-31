@@ -9,3 +9,4 @@ node_modules
 cache
 notes.txt
 compose.dev.yaml
+release.md

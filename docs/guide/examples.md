@@ -23,6 +23,7 @@ You can monitor systemd services / journal logs with LoggiFly by setting up a fl
 
 With this compose file journal logs are directly streamed to the fluentbit container logs where LoggiFly can then monitor them.
 
+### Fluentbit Compose File
 ```yaml
 services:
   fluentbit:
@@ -37,5 +38,32 @@ services:
       -o stdout -p match=* -p format=json_lines
     restart: unless-stopped
 ```
+
+### LoggiFly Config Example
+
+```yaml
+containers:
+    fluentbit:
+      notification_cooldown: 0
+      excluded_keywords:
+        - timeout
+      keywords:
+        - keyword_group: 
+            - sshd 
+            - failed
+          notification_title: 'Failed SSH Login Attempt'
+          json_template: '{MESSAGE}'
+
+```
+
+### Result
+
+![Failed SSH Login](/ssh-failed-login.png)
+
+
+
+
+
+
 
 
