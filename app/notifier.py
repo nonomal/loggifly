@@ -144,7 +144,7 @@ def send_ntfy_notification(ntfy_config, message, title, attachment: dict | None 
     """
     message = ("This message had to be shortened: \n" if len(message) > 3900 else "") + message[:3900]
     headers = {
-        "Title": title.encode("latin-1", errors="ignore").decode("latin-1"),
+        "Title": title.encode("latin-1", errors="ignore").decode("latin-1").strip(),
         "Tags": f"{ntfy_config['tags']}",
         "Icon": "https://raw.githubusercontent.com/clemcer/loggifly/main/images/icon.png",
         "Priority": f"{ntfy_config['priority']}"
