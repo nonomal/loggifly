@@ -10,7 +10,7 @@ Supported actions are `restart`, `stop` and `start` and are configured per conta
 
 You can perform these actions on the monitored container itself or on other containers.
 
-The `action_cooldown` defaults to 300 seconds (5 minutes) and has to be at least 10 seconds.
+The `action_cooldown` is per action and defaults to 300 seconds (5 minutes) and has to be at least 10 seconds.
 
 :::info
 Note that actions require access to the docker socket and generally don't work with a Docker Socket Proxy.
@@ -26,13 +26,13 @@ containers:
       action: restart  # Restart the container when this regex is found
     - keyword: critical
       action: stop     # Stop the container when this keyword is found
+      action_cooldown: 10  # 10 seconds cooldown for this action
 ```
 
 ### Perform actions on other containers
 
 ```yaml
 containers:
-  action_cooldown: 10  # 10 seconds cooldown
   container3:
     - regex: "process.*(failed|did not finish)" 
       action: restart@some-other-container  # Restart another container when this regex is found

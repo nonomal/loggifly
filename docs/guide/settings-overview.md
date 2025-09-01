@@ -33,7 +33,7 @@ This table shows which settings are available and where they can be configured:<
 | `notification_title`            | ✅                   | ✅                            | ✅                     | Template for the notification title (`{container}`, `{keywords}`) |
 | `attachment_lines`              | ✅                   | ✅                            | ✅                     | Number of log lines to include in attachments |
 | `attach_logfile`                | ✅                   | ✅                            | ✅                     | Attach log output to the notification (true/false) |
-| `action_cooldown`               | ✅                   | ✅                            | –                      | Cooldown for triggering container actions per container and action (default: 300s, min: 10s) |
+| `action_cooldown`               | ✅                   | ✅                            | ✅                      | Cooldown for triggering container actions per container and action (default: 300s, min: 10s) |
 | `action`                        | –                    | –                             | ✅                      | Trigger container actions (restart/stop) |
 | [`json_template`](./customize-notifications/json_template) | – | –                     | ✅                     | Template for JSON log entries |
 | [`template`](./customize-notifications/template) | –   | –                             | ✅                      | Template for plain text log entries using named capturing groups |
