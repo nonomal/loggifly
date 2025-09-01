@@ -28,7 +28,7 @@ export default defineConfig({
        {
         text: 'Other Platforms',
         items: [
-          { text: 'Docker Swarm', link: '/guide/swarm' },
+          { text: 'Swarm', link: '/guide/swarm' },
           { text: 'Podman', link: '/guide/podman' }
         ]
       },
