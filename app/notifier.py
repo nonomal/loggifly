@@ -146,7 +146,7 @@ def send_ntfy_notification(ntfy_config, message, title, attachment: dict | None 
     headers = {
         "Title": title.encode("latin-1", errors="ignore").decode("latin-1").strip(),
         "Tags": f"{ntfy_config['tags']}",
-        "Icon": "https://raw.githubusercontent.com/clemcer/loggifly/main/images/icon.png",
+        "Icon": "https://raw.githubusercontent.com/clemcer/loggifly/blob/main/docs/public/icon.png",
         "Priority": f"{ntfy_config['priority']}"
     }
     if ntfy_config.get('authorization'):

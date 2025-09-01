@@ -71,9 +71,7 @@ class LogProcessor:
             self.new_line_event = threading.Event()
             self.buffer = []
             if self.valid_pattern is False:
-                log_tail = self.monitor_instance.tail_logs(unit_name=self.unit_name, 
-                                                            monitor_type=self.monitor_type, 
-                                                            lines=100)
+                log_tail = self.tail_logs(lines=100)
                 if log_tail:
                     self._find_starting_pattern(log_tail)
                 if self.valid_pattern:
@@ -385,9 +383,7 @@ class LogProcessor:
         """
         file_name = f"last_{number_attachment_lines}_lines_from_{self.unit_name}.log"
         try:
-            log_tail = self.monitor_instance.tail_logs(unit_name=self.unit_name, 
-                                                       monitor_type=self.monitor_type, 
-                                                       lines=number_attachment_lines)
+            log_tail = self.tail_logs(lines=number_attachment_lines)
             if log_tail:
                 return log_tail, file_name
         except Exception as e:
@@ -402,6 +398,13 @@ class LogProcessor:
         result = self.monitor_instance.container_action(self.monitor_type, self.unit_name, action)
         return result
 
+    def tail_logs(self, lines=100):
+        """
+        Tail logs from the container. Calls the tail_logs method of the monitor instance.
+        """
+        return self.monitor_instance.tail_logs(unit_name=self.unit_name, 
+                                                monitor_type=self.monitor_type, 
+                                                lines=lines)
 
 def get_notification_title(message_config: dict, action_result: Optional[str] = None):
     """
@@ -409,14 +412,14 @@ def get_notification_title(message_config: dict, action_result: Optional[str] = 
     """
     title = ""
     keywords_found = message_config.get("keywords_found", "")
-    notification_title = message_config.get("notification_title", "default")
+    notification_title_config = message_config.get("notification_title", "default")
     unit_name = message_config.get("unit_name", "") 
 
-    if notification_title.strip().lower() != "default":
+    if notification_title_config.strip().lower() != "default":
         template = ""
         try:
             keywords = ', '.join(f"'{word}'" for word in keywords_found)
-            template = notification_title.strip()
+            template = notification_title_config.strip()
             template_fields = {
                 "container": unit_name,
                 "keywords": keywords, 

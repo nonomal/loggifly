@@ -32,10 +32,6 @@ class ContainerConfig:
         self.container_id = container_id
 
 class MonitoredContainerContext(ContainerConfig):
-    """
-    Represents a monitored container with all its associated state.
-    This replaces the dictionary-based approach for cleaner, type-safe code.
-    """
     def __init__(self, monitor_type, config_key, unit_name, container_name, container_id, unit_config, config_via_labels):
         super().__init__(monitor_type, config_key, unit_name, unit_config, container_name, container_id, config_via_labels)
         self.generation = 0  # Used to track container restarts
@@ -60,6 +56,9 @@ class MonitoredContainerContext(ContainerConfig):
         self.processor = processor
                                     
 class MonitoredContainerRegistry:
+    """
+    Registry of monitored containers and formerly monitored containers.
+    """
     def __init__(self):
         self._by_id = {}
         self._by_unit_name = {}
@@ -141,7 +140,8 @@ class DockerLogMonitor:
         )
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
-        self.logger.setLevel(getattr(logging, self.config.settings.log_level.upper(), logging.INFO))
+        self.log_level = self.config.settings.log_level.upper()
+        self.logger.setLevel(getattr(logging, self.log_level, logging.INFO))
         self.logger.propagate = False
 
     def _add_thread(self, thread):
@@ -156,19 +156,20 @@ class DockerLogMonitor:
             (self.config.containers, self.selected_containers, "Container"),
             (self.config.swarm_services, self.selected_swarm_services, "Swarm Service")
         ]:
-            if config:
-                for object_name in config:
-                    config_object = config[object_name]
-                    if self.hostname and config_object.hosts is not None:
-                        hostnames = config_object.hosts.split(",")
-                        if all(hn.strip() != self.hostname for hn in hostnames):
-                            self.logger.debug(f"{type_placeholder} {object_name} is configured for host(s) '{', '.join(hostnames)}' but this instance is running on host '{self.hostname}'. Skipping this {type_placeholder}.")
-                            continue
-                    selected.append(object_name)
+            if not config:
+                continue
+            for object_name in config:
+                config_object = config[object_name]
+                if self.hostname and config_object.hosts is not None:
+                    hostnames = config_object.hosts.split(",")
+                    if all(hn.strip() != self.hostname for hn in hostnames):
+                        self.logger.debug(f"{type_placeholder} {object_name} is configured for host(s) '{', '.join(hostnames)}' but this instance is running on host '{self.hostname}'. Skipping this {type_placeholder}.")
+                        continue
+                selected.append(object_name)
 
     def should_monitor(self, container, skip_labels=False) -> ContainerConfig | None:
-        c_name = container.name
-        c_id = container.id
+        cname = container.name
+        cid = container.id
 
         # Check if the container is a swarm service
         if service_info := get_service_info(container, self.client):
@@ -181,15 +182,15 @@ class DockerLogMonitor:
                     self.logger.error(f"Could not validate swarm service {service_name} config from labels. Skipping.\nLabels: {service_labels}")
                     return None
                 self.logger.info(f"Validated swarm service config for {service_name} from labels:\n{get_pretty_yaml_config(unit_config, top_level_key=service_name)}")
-                return ContainerConfig(MonitorType.SWARM, service_name, unit_name, unit_config, c_name, c_id, config_via_labels=True)
+                return ContainerConfig(MonitorType.SWARM, service_name, unit_name, unit_config, cname, cid, config_via_labels=True)
             elif decision == MonitorDecision.SKIP:
                 return None
             elif decision == MonitorDecision.UNKNOWN:
                 if service_name in self.selected_swarm_services:
-                    return ContainerConfig(MonitorType.SWARM, service_name, unit_name, self.config.swarm_services[service_name], c_name, c_id)
+                    return ContainerConfig(MonitorType.SWARM, service_name, unit_name, self.config.swarm_services[service_name], cname, cid)
                 elif stack_name in self.selected_swarm_services:
                     decision = MonitorDecision.MONITOR
-                    return ContainerConfig(MonitorType.SWARM, stack_name, unit_name, self.config.swarm_services[stack_name], c_name, c_id)
+                    return ContainerConfig(MonitorType.SWARM, stack_name, unit_name, self.config.swarm_services[stack_name], cname, cid)
         
         # Check if the container is configured via labels
         labels = container.labels or {}
@@ -200,12 +201,12 @@ class DockerLogMonitor:
                 self.logger.error(f"Could not validate container {container.name} config from labels. Skipping.\nLabels: {labels}")
                 return None
             self.logger.info(f"Validated container container config for {container.name} from labels:\n{get_pretty_yaml_config(unit_config, top_level_key=container.name)}")
-            return ContainerConfig(MonitorType.CONTAINER, c_name, c_name, unit_config, c_name, c_id, config_via_labels=True)
+            return ContainerConfig(MonitorType.CONTAINER, cname, cname, unit_config, cname, cid, config_via_labels=True)
         elif decision == MonitorDecision.SKIP:
             return None
         # Check if the container is configured via normal configuration
         elif decision == MonitorDecision.UNKNOWN and container.name in self.selected_containers:
-            return ContainerConfig(MonitorType.CONTAINER, c_name, c_name, self.config.containers[c_name], c_name, c_id)
+            return ContainerConfig(MonitorType.CONTAINER, cname, cname, self.config.containers[cname], cname, cid)
         return None
 
     def _maybe_monitor_container(self, container, skip_labels=False) -> bool:
@@ -325,7 +326,8 @@ class DockerLogMonitor:
         Returns a summary message to app.py.
         """
         self.config = config if config is not None else self.config
-        self.logger.setLevel(getattr(logging, self.config.settings.log_level.upper(), logging.INFO))
+        self.log_level = self.config.settings.log_level.upper()
+        self.logger.setLevel(getattr(logging, self.log_level, logging.INFO))
         self._get_selected_containers()  
         if self.shutdown_event.is_set():
             self.logger.debug("Shutdown event is set. Not applying config changes.")
@@ -338,13 +340,13 @@ class DockerLogMonitor:
                 if ctx.monitor_type == MonitorType.CONTAINER:
                     ctx.unit_config = self.config.containers.get(ctx.config_key) or None
                     ctx.processor.load_config_variables(self.config, ctx.unit_config)
-                    if ctx.config_key not in self.selected_containers and not ctx.monitoring_stopped_event.is_set()():
+                    if ctx.config_key not in self.selected_containers and not ctx.monitoring_stopped_event.is_set():
                         self.logger.debug(f"Container {ctx.config_key} is not in the config. Stopping monitoring.")
                         self._close_stream_connection(ctx.container_id)
                 elif ctx.monitor_type == MonitorType.SWARM:
                     ctx.unit_config = self.config.swarm_services.get(ctx.config_key) or None
                     ctx.processor.load_config_variables(self.config, ctx.unit_config)
-                    if ctx.config_key not in self.selected_swarm_services and not ctx.monitoring_stopped_event.is_set()():
+                    if ctx.config_key not in self.selected_swarm_services and not ctx.monitoring_stopped_event.is_set():
                         self.logger.debug(f"Swarm Service {ctx.config_key} is not in the config. Stopping monitoring.")
                         self._close_stream_connection(ctx.container_id)
             # start monitoring containers that are in the config but not monitored yet
@@ -374,7 +376,7 @@ class DockerLogMonitor:
         unmonitored_swarm_services = [s for s in self.selected_swarm_services if s not in [s.config_key for s in actively_monitored_swarm]]
         monitored_swarm_service_units = [s.unit_name for s in actively_monitored_swarm]
         if monitored_swarm_service_units:
-            messages.append("These selected Swarm Containers are being monitored:\n - " + "\n - ".join(monitored_swarm_service_units))
+            messages.append("These Swarm Containers are being monitored:\n - " + "\n - ".join(monitored_swarm_service_units))
         if unmonitored_swarm_services:
             messages.append("These Swarm Services are not running:\n - " + "\n - ".join(unmonitored_swarm_services))
         message = "\n\n".join(messages)
@@ -432,10 +434,10 @@ class DockerLogMonitor:
                 self.logger.error(f"Container {container.name} not found during container check. Stopping monitoring.")
                 return False
             except requests.exceptions.ConnectionError as ce:
-                if error_count == 1:
+                if error_count == 1 or self.log_level == "DEBUG":
                     self.logger.error(f"Can not connect to Container {container.name} {ce}")
             except Exception as e:
-                if error_count == 1:
+                if error_count == 1 or self.log_level == "DEBUG":
                     self.logger.error(f"Error while checking container {container.name}: {e}")
             return True
 
@@ -484,7 +486,7 @@ class DockerLogMonitor:
                     not_found_error = True
                 except Exception as e:
                     error_count, last_error_time, too_many_errors = self._handle_error(error_count, last_error_time, unit_name)
-                    if error_count == 1:  # log error only once
+                    if error_count == 1 or self.log_level == "DEBUG":  # log error only once
                         self.logger.error("Error trying to monitor %s: %s", unit_name, e)
                         self.logger.debug(traceback.format_exc())
                 finally:
@@ -545,7 +547,7 @@ class DockerLogMonitor:
                     self.logger.error(f"Docker Event Handler: Container {container} not found: {e}")
                 except Exception as e:
                     error_count, last_error_time, too_many_errors = self._handle_error(error_count, last_error_time)
-                    if error_count == 1:
+                    if error_count == 1 or self.log_level == "DEBUG":
                         self.logger.error(f"Docker Event-Handler was stopped {e}. Trying to restart it.")
                 finally:
                     if self.shutdown_event.is_set() or too_many_errors:
@@ -641,16 +643,16 @@ class DockerLogMonitor:
             container = self.client.containers.get(container_name)
             if get_service_info(container, self.client):
                 self.logger.error(f"Container {container_name} belongs to a swarm service. Cannot perform action: {action}")
-                return None
+                return f"did not perform action. Container '{container_name}' belongs to a swarm service."
             if socket.gethostname() == container.id[:12]:
                 self.logger.warning("LoggiFly can not perform actions on itself. Skipping.")
-                return None
+                return "did not perform action. LoggiFly can not perform actions on itself."
         except docker.errors.NotFound:
             self.logger.error(f"Container {container_name} not found. Could not perform action: {action}")
-            return None
+            return f"did not perform action. Container '{container_name}' not found."
         except Exception as e:
             self.logger.error(f"Unexpected error while trying to perform action on container {container_name}: {e}")
-            return None
+            return f"did not perform action. Unexpected error: {e}"
 
         try:
             container_name = container.name
@@ -727,6 +729,7 @@ def get_service_info(container, client) -> tuple[str, str, dict] | None:
 def get_service_unit_name(labels) -> str | None:
     """
     Tries to extract the service name with their replica id from container labels so that we have a unique name for each replica.
+    Converts service_name.1.1234567890 to service_name.1
     """
     task_id = labels.get("com.docker.swarm.task.id")
     task_name = labels.get("com.docker.swarm.task.name")

@@ -83,6 +83,8 @@ class ConfigHandler(FileSystemEventHandler):
                 self.reload_timer.start()
 
     def _trigger_reload(self):
+        logging.getLogger().setLevel(getattr(logging, self.config.settings.log_level.upper(), logging.INFO))
+        logging.info(f"Log-Level set to {self.config.settings.log_level}")
         logging.info("Config change detected, reloading config...")
         try:
             self.config, _ = load_config()
@@ -92,9 +94,6 @@ class ConfigHandler(FileSystemEventHandler):
         messages = []
         for monitor in self.monitor_instances:
             messages.append(monitor.reload_config(self.config))
-        # message_line_break = "\n" + "-" * 60 + "\n"
-        # message = message_line_break.join(messages) if messages else "LoggiFly is not monitoring anything."
-        # message = "-" * 60 + "\n" + message + "\n" + "-" * 60
         message = format_message(messages, "LoggiFly is not monitoring anything.")
 
         logging.info(f"Config reloaded successfully.\n{message}")
@@ -242,8 +241,8 @@ def start_loggifly():
         config, path = load_config()
     except ValidationError as e:
         logging.critical(f"Error loading Config: {format_pydantic_error(e)}")
-        logging.info("Waiting 15s to prevent restart loop...")
-        time.sleep(15)
+        logging.info("Waiting 5s to prevent restart loop...")
+        time.sleep(5)
         sys.exit(1)
 
     logging.getLogger().setLevel(getattr(logging, config.settings.log_level.upper(), logging.INFO))
@@ -269,10 +268,6 @@ def start_loggifly():
         docker_hosts[host]["monitor"] = monitor
 
     monitor_instances = [docker_hosts[host]["monitor"] for host in docker_hosts.keys()]
-                
-    # message_line_break = "\n\n" + "-" * 60 + "\n\n"
-    # message = message_line_break.join(start_messages) if start_messages else "LoggiFly started without monitoring anything."
-    # message = "-" * 60 + "\n" + message + "\n\n" + "-" * 60
     message = format_message(start_messages, "LoggiFly started without monitoring anything.")
 
     logging.info(f"LoggiFly started.\n{message}")
@@ -287,7 +282,7 @@ def start_loggifly():
     if config.settings.reload_config and isinstance(path, str) and os.path.exists(path):
         config_observer = start_config_watcher(monitor_instances, config, path)
     else:
-        logging.debug("Config watcher not started: reload_config is False or config path invalid.")
+        logging.debug("Config watcher did not start: reload_config is False or config path invalid.")
         config_observer = None
     
     handle_signal, global_shutdown_event = create_handle_signal(monitor_instances, config, config_observer)

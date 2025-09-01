@@ -12,7 +12,7 @@ RUN pip install --prefix=/install --no-cache-dir -r requirements.txt
 FROM gcr.io/distroless/python3-debian12
 
 WORKDIR /app
-USER 1000:1000
+# USER 1000:1000
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1

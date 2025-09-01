@@ -24,7 +24,7 @@ class BaseConfigModel(BaseModel):
         arbitrary_types_allowed=False,
     )
 
-class ExcludedKeywords(BaseConfigModel):
+class ExcludedKeyword(BaseConfigModel):
     keyword: Optional[str] = None
     regex: Optional[str] = None
 
@@ -47,7 +47,7 @@ class Settings(BaseConfigModel):
     action_cooldown: Optional[int] = 300
     attachment_lines: int = 20
     hide_regex_in_title: Optional[bool] = False
-    excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = None
+    excluded_keywords: Optional[List[Union[str, ExcludedKeyword]]] = None
     disable_notifications: Optional[bool] = None
     olivetin_url: Optional[str] = None
     olivetin_username: Optional[str] = None
@@ -76,7 +76,7 @@ class ModularSettings(BaseConfigModel):
     notification_title: Optional[str] = None
     action_cooldown: Optional[int] = None
     attach_logfile: Optional[bool] = None
-    excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = None
+    excluded_keywords: Optional[List[Union[str, ExcludedKeyword]]] = None
     hide_regex_in_title: Optional[bool] = None
     disable_notifications: Optional[bool] = None
 
@@ -133,7 +133,7 @@ class KeywordBase(BaseModel):
     keywords: List[Union[str, KeywordItem, RegexItem, KeywordGroup]] = []
 
     @model_validator(mode="before")
-    def int_to_string(cls, data: dict) -> dict:
+    def validate_keywords(cls, data: dict) -> dict:
         """
         Convert integer keywords to strings and filter out misconfigured entries before validation.
         """
@@ -236,7 +236,7 @@ class GlobalConfig(BaseConfigModel):
     def transform_legacy_format(cls, values):
         """Migrate legacy list-based container definitions to dictionary format."""
         # Convert list containers to dict format
-        for container_object in ["containers", "swarm_services", "systemd_services"]:
+        for container_object in ["containers", "swarm_services"]:
             if isinstance(values.get(container_object), list):
                 values[container_object] = {name: {} for name in values[container_object]}
             for container in values.get(container_object, {}):
