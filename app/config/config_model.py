@@ -268,6 +268,7 @@ class GlobalConfig(BaseConfigModel):
         return self
 
 def validate_action_cooldown(v):
+    v = int(v)
     if v is not None and v < 10:
         logging.warning("Action cooldown must be at least 10 seconds. Setting to 10 seconds")
         return 10

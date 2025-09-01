@@ -501,7 +501,7 @@ class DockerLogMonitor:
                         break
                     else:
                         self.logger.info(f"{unit_name}: Log Stream stopped. Reconnecting... {'error count: ' + str(error_count) if error_count > 0 else ''}")
-            self.logger.info(f"{unit_name}: Monitoring stopped for container.")
+            self.logger.info(f"Monitoring stopped for container {unit_name}.")
             stop_monitoring_event.set() 
             monitoring_stopped_event.set()  
 
@@ -660,7 +660,7 @@ class DockerLogMonitor:
             self.logger.debug(f"Performing action '{action_name}' on container {container_name} with status {container.status}.")
             if action_name == Actions.STOP.value:
                 if container.status != "running":
-                    self.logger.info(f"Not performing action 'start' on container {container_name}. Container {container_name} is not running.")
+                    self.logger.info(f"not starting container {container_name}. Container {container_name} is not running.")
                     return f"did not stop {container_name}, container is not running"
                 self.logger.info(f"Stopping Container: {container_name}.")
                 container = container
@@ -696,7 +696,7 @@ class DockerLogMonitor:
                 return f"{container_name} has been started!"
         except Exception as e:
             self.logger.error(f"Failed to {action} {unit_name}: {e}")
-        return f"Failed to perform action '{action_name}' on {container_name}"    
+        return f"failed to {action} {container_name}"    
 
 
 def check_monitor_label(labels) -> MonitorDecision:

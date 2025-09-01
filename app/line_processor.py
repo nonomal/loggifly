@@ -128,9 +128,10 @@ class LogProcessor:
             "excluded_keywords": (unt_cnf.get("excluded_keywords") or []) + (config.settings.excluded_keywords or []),
             "hide_regex_in_title": unt_cnf.get("hide_regex_in_title") if unt_cnf.get("hide_regex_in_title") is not None else config.settings.hide_regex_in_title,
             "disable_notifications": unt_cnf.get("disable_notifications") or config.settings.disable_notifications or False,
+            "action_cooldown": unt_cnf.get("action_cooldown") or config.settings.action_cooldown or 300,
         }
         self.multi_line_mode = config.settings.multi_line_entries
-        self.action_cooldown= unt_cnf.get("action_cooldown") or config.settings.action_cooldown or 300
+        # self.action_cooldown= unt_cnf.get("action_cooldown") or config.settings.action_cooldown or 300
         self.start_flush_thread_if_needed()
 
 
@@ -330,12 +331,13 @@ class LogProcessor:
         action_to_perform = keyword_msg_cnf.get("action")
         action_result = None
         if action_to_perform is not None:
-            if self.time_per_action.get(action_to_perform, 0) < time.time() - int(self.action_cooldown):
+            cooldown = self.container_msg_cnf["action_cooldown"]
+            if self.time_per_action.get(action_to_perform, 0) < time.time() - int(cooldown):
                 action_result = self._container_action(action_to_perform) # returns result as a string that can be used in a notification title
                 self.time_per_action[action_to_perform] = time.time()
             else:
                 last_action_time = time.strftime("%H:%M:%S", time.localtime(self.time_per_action.get(action_to_perform, 0)))
-                self.logger.info(f"Action for {self.unit_name} is on cooldown. Not performing action:'{action_to_perform}'. Last action was at {last_action_time}. Cooldown is {self.action_cooldown} seconds.")
+                self.logger.info(f"{self.unit_name}: Not performing action: '{action_to_perform}'. Action is on cooldown. Action was last performed at {last_action_time}. Cooldown is {cooldown} seconds.")
 
         msg_cnf = self.get_message_config(keyword_msg_cnf)
         attachment = None
