@@ -6,12 +6,14 @@ title: Actions
 ## Container Actions
 
 You can configure automatic actions for your containers based on log patterns. 
-Supported actions are `restart`, `stop` and `restart` and are configured per container. 
+Supported actions are `restart`, `stop` and `start` and are configured per container. 
 
 You can perform these actions on the monitored container itself or on other containers.
 
+The `action_cooldown` defaults to 300 seconds (5 minutes) and has to be at least 10 seconds.
+
 :::info
-The `action_cooldown` default setting is 300 seconds (5 minutes) and has to be at least 10 seconds.
+Note that actions require access to the docker socket and generally don't work with a Docker Socket Proxy.
 :::
 
 ### Perform actions on the monitored container
@@ -20,12 +22,10 @@ The `action_cooldown` default setting is 300 seconds (5 minutes) and has to be a
 containers:
   action_cooldown: 60  # 1 minute cooldown
   container3:
-    - regex: error\b.*
+    - regex: "process.*(failed|did not finish)" 
       action: restart  # Restart the container when this regex is found
     - keyword: critical
       action: stop     # Stop the container when this keyword is found
-    - keyword: timeout
-      action: restart
 ```
 
 ### Perform actions on other containers
@@ -34,12 +34,12 @@ containers:
 containers:
   action_cooldown: 10  # 10 seconds cooldown
   container3:
-    - regex: error\b.*
+    - regex: "process.*(failed|did not finish)" 
       action: restart@some-other-container  # Restart another container when this regex is found
     - keyword: critical
-      action: stopsome-other-container     # Stop anoter container when this keyword is found
+      action: stop@some-other-container     # Stop anoter container when this keyword is found
     - keyword: timeout
-      action: restart@some-other-container
+      action: start@some-other-container
 ```
 
 ## Trigger OliveTin Actions
@@ -58,7 +58,7 @@ Here is a an example config snippet:
 ```yaml
 containers:
   container3:
-    - regex: error\b.*
+    - regex: download.*failed" 
       olivetin_action_id: some-action-id
 
 settings:

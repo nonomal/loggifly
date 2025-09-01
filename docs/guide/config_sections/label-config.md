@@ -16,7 +16,7 @@ Container-level settings are set via `loggifly.<setting>`.
 To provide a simple list of keywords, you can set `loggifly.keywords` to a comma-separated list of keywords. The same applies for `loggifly.excluded_keywords`.
 
 If you want to set keyword-level settings, you can do so by setting `loggifly.keywords.<index>.<setting>`. 
-So if you wanted to set a regex with a notification title, you can do so by setting `loggifly.keywords.<index>.regex` and `loggifly.keywords.<index>.notification_title`.
+So if you wanted to set a regex with a notification title, you can do so by setting `loggifly.keywords.1.regex: "some-regex"` and `loggifly.keywords.1.notification_title: "some-title"`.
 
 ## Example
 
@@ -31,22 +31,21 @@ services:
       loggifly.apprise_url: "discord://webhook-url"
       loggifly.ntfy_tags: "closed_lock_with_key"
       loggifly.ntfy_priority: "3"
-      loggifly.attach_logfile: "true"
+      loggifly.attach_logfile: "true" # always attach the logfile to the notification for this container
       
       # simple keyword with notification title
       loggifly.keywords.0: "critical" 
-      loggifly.keywords.0.notification_title: "Critical Alert"
+      loggifly.keywords.0.notification_title: "{container}: Critical Alert"
       
-      # regex with notification title, tags and hide_regex_in_title
-      loggifly.keywords.1.regex: "(notification|message).*successful" 
+      # regex with ntfy tags and hide_regex_in_title
+      loggifly.keywords.1.regex: "download.*failed" 
       loggifly.keywords.1.ntfy_tags: "partying_face"
       loggifly.keywords.1.hide_regex_in_title: "true"
       
-      # simple keyword with action and notification title
+      # simple keyword with actions
       loggifly.keywords.2.keyword: "timeout" 
       loggifly.keywords.2.action: "restart"
-      loggifly.keywords.2.notification_title: "{container} restarted" 
 
-      # simple keyword list and excluded keywords
+      # simple comma-separated lists for keywords and excluded keywords
       loggifly.keywords: "keyword1,keyword2,keyword3"
       loggifly.excluded_keywords: "keyword4,keyword5,keyword6"

@@ -71,42 +71,9 @@ services:
 
 ## Socket Proxy
 
-You can also use a **Docker Socket Proxy** with LoggiFly.<br>
-A Socket Proxy adds a security layer by **controlling access to the Docker daemon**, essentially letting LoggiFly only read certain info like container logs without giving it full control over the docker socket.<br>
-With the linuxserver image there have been some connection and timeout problems so the recommended proxy is **[Tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)**.<br>
-When using the Tecnativa Proxy the log stream connection drops every ~10 minutes, LoggiFly simply resets the connection.<br>
+The simplest way to use LoggiFly with remote hosts is to use a docker socket proxy. Just take a look at the [docker compose examples](./getting-started#docker-compose) and set up the socket proxy on your remote host.
 
 ::: info
-Container restart/stop actions are not supported when using a Docker Socket Proxy unless `POST=1` is enabled which kind of defeats the purpose of the proxy.
+Container restart/stop actions are not supported when using a Docker Socket Proxy unless you use the compose example with `tecnativa/docker-socket-proxy` and `POST=1` is enabled.
 :::
-
-Here is a sample **docker compose** file:
-
-
-```yaml
-version: "3.8"
-services:
-  loggifly:
-    image: ghcr.io/clemcer/loggifly:latest
-    container_name: loggifly 
-    volumes:
-      - ./loggifly/config:/config # Place your config.yaml here if you are using one
-    environment:
-      TZ: Europe/Berlin
-      DOCKER_HOST: tcp://socket-proxy:2375
-    depends_on:
-      - socket-proxy
-    restart: unless-stopped
-    
-  socket-proxy:
-    image: tecnativa/docker-socket-proxy
-    container_name: docker-socket-proxy
-    environment:
-      - CONTAINERS=1  
-      - POST=0        
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro  
-    restart: unless-stopped
-
-```
 

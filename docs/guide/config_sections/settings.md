@@ -63,5 +63,6 @@ settings:
   excluded_keywords:
     - keyword1
     - regex: regex-pattern1
+    - keyword: keyword2
 ```
 

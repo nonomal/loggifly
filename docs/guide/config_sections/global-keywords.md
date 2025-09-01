@@ -10,7 +10,7 @@ Keywords/regexes under `global_keywords` can also be configured with additional 
 global_keywords:              
   keywords:
     - login failed
-    - regex: error\b.*
+    - regex: download.*failed" 
       action: stop
     - keyword: download failed
       attach_logfile: true

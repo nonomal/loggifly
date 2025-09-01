@@ -4,12 +4,12 @@
 #
 # This is a template for your config.yaml file.
 #
+# Remove any sections you don't need.
+# After editing, rename this file to config.yaml to use it.
+#
 # For LoggiFly to work, you need to:
 #   - Configure at least ONE container
 #   - Add at least ONE keyword/regex (globally or per container)
-#
-# Optional: Remove any sections you don't need.
-# After editing, rename this file to config.yaml to use it.
 #
 # Each container example below shows more configuration options.
 #
@@ -28,6 +28,10 @@ containers:
       - keyword1                 # Simple keyword
       - regex: regex-pattern1    # Use this for regex patterns
       - keyword: keyword2        # Another way to set a simple keyword
+      - keyword_group:           # When all of these keywords are found in a log line, a notification is sent
+        - error
+        - critical
+        - timeout
 
   container3:
     keywords:

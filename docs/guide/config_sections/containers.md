@@ -11,7 +11,7 @@ containers:
   container1:
     keywords:
       - error               # simple keyword
-      - regex: error\b.*   # this is how to set regex patterns
+      - regex: download.*failed"    # this is how to set regex patterns
       - keyword: critical   # another way to set a simple keyword
     
 ```
@@ -45,10 +45,10 @@ containers:
       - regex: \btimeout\b.*  # This regex will be ignored for this container
     keywords:
       - error
-      - regex: error\b.*
+      - regex: download.*failed" 
         # Exclude keywords for a specific keyword or regex pattern
         excluded_keywords:
-          - uncritical  # Log lines with 'error\b.*' and 'uncritical' will be ignored
+          - uncritical  # Log lines with 'download.*failed" ' and 'uncritical' will be ignored
 ```
 
 ## Keyword Groups
@@ -97,7 +97,7 @@ containers:
     keywords:
       - critical
 
-      - regex: error\b.*
+      - regex: download.*failed" 
         ntfy_tags: partying_face   
         ntfy_priority: 5
         ntfy_topic: error
