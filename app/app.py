@@ -10,6 +10,7 @@ import docker.errors
 from threading import Timer
 from docker.tls import TLSConfig
 from urllib.parse import urlparse
+import urllib.request
 from pydantic import ValidationError
 from typing import Any
 from watchdog.observers import Observer
@@ -55,11 +56,35 @@ def create_handle_signal(monitor_instances, config, config_observer):
 
     return handle_signal, global_shutdown_event
     
+
 def format_message(messages, alt_text):
     message_line_break = "\n" + "-" * 60 + "\n"
     message = message_line_break.join(messages) if messages else alt_text
     message = "-" * 60 + "\n" + message + "\n" + "-" * 60
     return message
+
+
+def ensure_config_template():
+    """
+    Replicates the legacy entrypoint.sh behavior:
+    - If /config exists and neither /config/config_template.yaml nor /config/config.yaml exist,
+      download the template file into /config/config_template.yaml.
+    """
+    config_dir = "/config"
+    config_template = os.path.join(config_dir, "config_template.yaml")
+    config_file = os.path.join(config_dir, "config.yaml")
+    config_url = "https://raw.githubusercontent.com/clemcer/loggifly/refs/heads/main/docs/configs/config_template.yaml"
+
+    if os.path.isdir(config_dir):
+        if not os.path.isfile(config_template) and not os.path.isfile(config_file):
+            try:
+                logging.info("loading config.yaml template...")
+                urllib.request.urlretrieve(config_url, config_template)
+            except Exception as e:
+                logging.warning(f"Could not download config template from {config_url}: {e}")
+    else:
+        logging.debug("/config does not exist, skipping config template download.")
+
 
 class ConfigHandler(FileSystemEventHandler):
     """
@@ -106,6 +131,7 @@ class ConfigHandler(FileSystemEventHandler):
             )
         # Reminder: The config watcher remains active even if reload_config is set to False after reload.
 
+
 def start_config_watcher(monitor_instances, config, path):
     """
     Starts a watchdog observer to monitor config.yaml for changes and trigger reloads.
@@ -115,6 +141,7 @@ def start_config_watcher(monitor_instances, config, path):
     observer.start()
     return observer
     
+
 
 def check_monitor_status(docker_hosts, global_shutdown_event):
     """
@@ -147,6 +174,7 @@ def check_monitor_status(docker_hosts, global_shutdown_event):
     thread = threading.Thread(target=check_and_reconnect, daemon=True)
     thread.start()
     return thread
+
 
 
 def create_docker_clients() -> dict[str, dict[str, Any]]:
@@ -233,10 +261,12 @@ def create_docker_clients() -> dict[str, dict[str, Any]]:
     return docker_hosts
 
 
+
 def start_loggifly():
     """
     Main entry point for LoggiFly. Loads config, sets up Docker clients, monitoring, config watcher, and signal handlers.
     """
+    ensure_config_template()
     try:
         config, path = load_config()
     except ValidationError as e:

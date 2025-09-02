@@ -603,7 +603,7 @@ class DockerLogMonitor:
         Tail the last 'lines' of logs for a specific container.
         Returns the last 'lines' of logs as a list of strings.
         """
-        if monitor_type and (container_context := self._registry.get_by_unit_name(monitor_type, unit_name)):
+        if container_context := self._registry.get_by_unit_name(monitor_type, unit_name):
             if container := self.client.containers.get(container_context.container_id):
                 try:
                     logs = container.logs(tail=lines).decode('utf-8')

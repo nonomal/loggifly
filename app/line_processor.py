@@ -355,7 +355,7 @@ class LogProcessor:
                     )
         disable_notifications = msg_cnf.get("disable_notifications") or self.container_msg_cnf.get("disable_notifications") or False
         if disable_notifications:
-            self.logger.info(f"Not sending notification for {self.unit_name} because notifications are disabled.")
+            self.logger.debug(f"Not sending notification for {self.unit_name} because notifications are disabled.")
 
         if not disable_notifications:
             title = get_notification_title(msg_cnf, action_result)
