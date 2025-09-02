@@ -165,7 +165,7 @@ def validate_unit_config(monitor_type, config_dict):
             return ContainerConfig.model_validate(config_dict)
     except ValidationError as e:
         type_str = monitor_type.value if hasattr(monitor_type, "value") else monitor_type
-        logging.error(f"Error validating {type_str} config: {e}")
+        logging.error(f"Error validating {type_str} config: {format_pydantic_error(e)}")
         return None
     except Exception as e:
         type_str = monitor_type.value if hasattr(monitor_type, "value") else monitor_type

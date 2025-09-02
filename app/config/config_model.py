@@ -108,6 +108,7 @@ class KeywordItemBase(ModularSettings):
 class RegexItem(KeywordItemBase):
     """
     Model for a regex-based keyword with optional settings.
+    The template can be used to format the notification title using named caputuring groups.
     """
     regex: str
     template: Optional[str] = None
@@ -120,7 +121,7 @@ class KeywordItem(KeywordItemBase):
 
 class KeywordGroup(KeywordItemBase):
     """
-    Model for a group of keywords.
+    Model for a group of keywords (all of them have to be found in a log line to trigger a notification).
     """
     keyword_group: List[Union[str, KeywordItem, RegexItem]] = []
 

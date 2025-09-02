@@ -179,9 +179,9 @@ class DockerLogMonitor:
             if decision == MonitorDecision.MONITOR:
                 unit_config = validate_unit_config(MonitorType.SWARM, parse_label_config(service_labels))
                 if unit_config is None:
-                    self.logger.error(f"Could not validate swarm service {service_name} config from labels. Skipping.\nLabels: {service_labels}")
+                    self.logger.error(f"Could not validate swarm service config for '{service_name}' from labels. Skipping.\nLabels: {service_labels}")
                     return None
-                self.logger.info(f"Validated swarm service config for {service_name} from labels:\n{get_pretty_yaml_config(unit_config, top_level_key=service_name)}")
+                self.logger.info(f"Validated swarm service config for '{service_name}' from labels:\n{get_pretty_yaml_config(unit_config, top_level_key=service_name)}")
                 return ContainerConfig(MonitorType.SWARM, service_name, unit_name, unit_config, cname, cid, config_via_labels=True)
             elif decision == MonitorDecision.SKIP:
                 return None
@@ -198,9 +198,9 @@ class DockerLogMonitor:
         if decision == MonitorDecision.MONITOR:
             unit_config = validate_unit_config(MonitorType.CONTAINER, parse_label_config(labels))
             if unit_config is None:
-                self.logger.error(f"Could not validate container {container.name} config from labels. Skipping.\nLabels: {labels}")
+                self.logger.error(f"Could not validate container config for '{container.name}' from labels. Skipping.\nLabels: {labels}")
                 return None
-            self.logger.info(f"Validated container container config for {container.name} from labels:\n{get_pretty_yaml_config(unit_config, top_level_key=container.name)}")
+            self.logger.info(f"Validated container config for '{container.name}' from labels:\n{get_pretty_yaml_config(unit_config, top_level_key=container.name)}")
             return ContainerConfig(MonitorType.CONTAINER, cname, cname, unit_config, cname, cid, config_via_labels=True)
         elif decision == MonitorDecision.SKIP:
             return None
@@ -762,6 +762,8 @@ def parse_label_config(labels: dict) -> dict[str, Any]:
             if parts[0] == "keywords" and isinstance(value, str):
                 keywords_to_append = [kw.strip() for kw in value.split(",") if kw.strip()]
             # Top Level Fields (e.g. ntfy_topic, attach_logfile, etc.)
+            elif parts[0] == "excluded_keywords" and isinstance(value, str):
+                config["excluded_keywords"] = [kw.strip() for kw in value.split(",") if kw.strip()]
             else:
                 config[parts[0]] = value
         # Keywords
@@ -776,6 +778,8 @@ def parse_label_config(labels: dict) -> dict[str, Any]:
                 if index not in keywords_by_index:
                     keywords_by_index[index] = {}
                 if field == "keyword_group":
+                    keywords_by_index[index][field] = [kw.strip() for kw in value.split(",") if kw.strip()]
+                elif field == "excluded_keywords":
                     keywords_by_index[index][field] = [kw.strip() for kw in value.split(",") if kw.strip()]
                 else:
                     keywords_by_index[index][field] = value

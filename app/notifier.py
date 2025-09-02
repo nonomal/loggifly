@@ -8,7 +8,8 @@ from pydantic import SecretStr
 import urllib.parse
 from config.config_model import GlobalConfig, ContainerConfig, SwarmServiceConfig
 
-logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
+logging.getLogger("apprise").setLevel(logging.WARNING)
 
 def get_ntfy_config(config: GlobalConfig, message_config, unit_config) -> dict:
     """
@@ -112,29 +113,44 @@ def send_apprise_notification(url, message, title, attachment: dict | None = Non
         if attachment and (file_content := attachment.get("content", "")):
             file_name = attachment.get("file_name", "attachment.txt")
             # /dev/shm works even when the container is read_only
-            file_path = os.path.join("/dev/shm", file_name)
-            with open(file_path, "w") as tmp_file:
-                tmp_file.write(file_content)
-                tmp_file.flush()
-                os.fsync(tmp_file.fileno())
-                result = apobj.notify(
-                    title=title,
-                    body=message,
-                    attach=file_path # type: ignore
-                )
+            file_path = None
+            try:
+                file_path = os.path.join("/dev/shm", file_name)
+                with open(file_path, "w") as tmp_file:
+                    tmp_file.write(file_content)
+                    tmp_file.flush()
+            except Exception:
+                logger.error("Error trying to write attachment file to /dev/shm")
+                try:
+                    file_path = os.path.join("/tmp", file_name)
+                    with open(file_path, "w") as tmp_file:
+                        tmp_file.write(file_content)
+                        tmp_file.flush()
+                except Exception:
+                    logger.error("Error trying to write attachment file to /tmp")
+                    
+            result = apobj.notify(
+                title=title,
+                body=message,
+                attach=file_path if file_path and os.path.exists(file_path) else None # type: ignore
+            )
         else:
             result = apobj.notify(
                 title=title,
                 body=message,
             )
         if result:
-            logging.info("Apprise-Notification sent successfully")
+            logger.info("Apprise-Notification sent successfully")
         else:
-            logging.error("Error trying to send apprise-notification")
-        if file_path:
-            os.remove(file_path)
+            logger.error("Error trying to send apprise-notification")
     except Exception as e:
-        logging.error("Error while trying to send apprise-notification: %s", e)
+        logger.error("Error while trying to send apprise-notification: %s", e)
+    finally:
+        if file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
 
 
 def send_ntfy_notification(ntfy_config, message, title, attachment: dict | None =None):
@@ -176,11 +192,11 @@ def send_ntfy_notification(ntfy_config, message, title, attachment: dict | None 
                 headers=headers
             )
         if response.status_code == 200:
-            logging.info("Ntfy-Notification sent successfully")
+            logger.info("Ntfy-Notification sent successfully")
         else:
-            logging.error("Error while trying to send ntfy-notification: %s", response.text)
+            logger.error("Error while trying to send ntfy-notification: %s", response.text)
     except requests.RequestException as e:
-        logging.error("Error while trying to connect to ntfy: %s", e)
+        logger.error("Error while trying to connect to ntfy: %s", e)
 
 
 def send_webhook(json_data: dict, webhook_config: dict):
@@ -196,12 +212,12 @@ def send_webhook(json_data: dict, webhook_config: dict):
             timeout=10
         )
         if response.status_code == 200:
-            logging.info(f"Webhook sent successfully.")
-            # logging.debug(f"Webhook Response: {json.dumps(response.json(), indent=2)}")
+            logger.info(f"Webhook sent successfully.")
+            # logger.debug(f"Webhook Response: {json.dumps(response.json(), indent=2)}")
         else:
-            logging.error("Error while trying to send POST request to custom webhook: %s", response.text)
+            logger.error("Error while trying to send POST request to custom webhook: %s", response.text)
     except requests.RequestException as e:
-        logging.error(f"Error trying to send webhook to url: {url}, headers: {headers}: %s", e)
+        logger.error(f"Error trying to send webhook to url: {url}, headers: {headers}: %s", e)
 
 
 def send_notification(config: GlobalConfig, 

@@ -334,7 +334,8 @@ class LogProcessor:
             cooldown = self.container_msg_cnf["action_cooldown"]
             if self.time_per_action.get(action_to_perform, 0) < time.time() - int(cooldown):
                 action_result = self._container_action(action_to_perform) # returns result as a string that can be used in a notification title
-                self.time_per_action[action_to_perform] = time.time()
+                if action_result:
+                    self.time_per_action[action_to_perform] = time.time()
             else:
                 last_action_time = time.strftime("%H:%M:%S", time.localtime(self.time_per_action.get(action_to_perform, 0)))
                 self.logger.info(f"{self.unit_name}: Not performing action: '{action_to_perform}'. Action is on cooldown. Action was last performed at {last_action_time}. Cooldown is {cooldown} seconds.")
