@@ -49,3 +49,17 @@ services:
       # simple comma-separated lists for keywords and excluded keywords
       loggifly.keywords: "keyword1,keyword2,keyword3"
       loggifly.excluded_keywords: "keyword4,keyword5,keyword6"
+```
+
+::: info
+You can also set these labels for Swarm Services in the compose file. Just put them under the `deploy` section.
+
+```yaml
+services:
+  webserver:
+    image: nginx
+    deploy:
+      labels:
+        ...
+```
+:::

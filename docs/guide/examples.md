@@ -43,16 +43,14 @@ services:
 
 ```yaml
 containers:
-    fluentbit:
-      notification_cooldown: 0
-      excluded_keywords:
-        - timeout
-      keywords:
-        - keyword_group: 
-            - sshd 
-            - failed
-          notification_title: 'Failed SSH Login Attempt'
-          json_template: '{MESSAGE}'
+  fluentbit:
+    keywords:
+      - keyword_group: 
+          - sshd 
+          - failed
+        notification_title: 'Failed SSH Login Attempt'
+        json_template: '{MESSAGE}'
+        notification_cooldown: 0
 
 ```
 
