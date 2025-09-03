@@ -4,7 +4,7 @@ title: Configuration via DockerLabels
 
 # Configuration via Docker Labels
 
-You can configure LoggiFly via Docker labels. This allows you to configure LoggiFly without having to edit the config file.
+You can configure LoggiFly via Docker labels. This allows you to monitor a container without having to edit the config file or LoggiFly environment variables.
 
 You can use pretty much every setting via Docker labels. This includes notifications, keywords, actions, etc on `container` and on `keyword` / `regex` level.
 

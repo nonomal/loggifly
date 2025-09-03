@@ -6,8 +6,8 @@ title: Docker Swarm
 
 LoggiFly does not monitor Swarm services directly, since the Swarm API is limited and does not integrate well with LoggiFly. Instead, it monitors the individual containers that belong to a configured Swarm service by recognizing the service name from Docker Swarm labels.
 
-This means that LoggiFly has to be deployed as a global service on every node in the swarm cluster.
-If you want to get context about which node the container that has triggered a notification is running on, you have to set the `LOGGIFLY_MODE` environment variable to `swarm`.
+This means that for LoggiFly to reliably monitor swarm services it has to be deployed as a global service on every node in the swarm cluster.
+If you want to get context in your notifications about which node the container that has triggered a notification is running on, you can set the `LOGGIFLY_MODE` environment variable to `swarm`.
 
 The `config.yaml` can be passed to each worker via [Docker Configs](https://docs.docker.com/reference/cli/docker/config/) (_see example_).
 

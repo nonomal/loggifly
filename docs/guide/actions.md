@@ -5,7 +5,7 @@ title: Actions
 
 ## Container Actions
 
-You can configure automatic actions for your containers based on log patterns. 
+You can configure actions for your containers. 
 Supported actions are `restart`, `stop` and `start` and are configured per container. 
 
 You can perform these actions on the monitored container itself or on other containers.

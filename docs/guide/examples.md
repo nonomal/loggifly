@@ -46,8 +46,9 @@ containers:
   fluentbit:
     keywords:
       - keyword_group: 
-          - sshd 
+          - ssh
           - failed
+          - password
         notification_title: 'Failed SSH Login Attempt'
         json_template: '{MESSAGE}'
         notification_cooldown: 0
