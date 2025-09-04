@@ -111,7 +111,7 @@ def send_apprise_notification(url, message, title, attachment: dict | None = Non
         apobj = apprise.Apprise()
         apobj.add(url)
         if attachment and (file_content := attachment.get("content", "")):
-            file_name = attachment.get("file_name", "attachment.txt")
+            file_name = attachment.get("file_name", "attachment.log")
             # /dev/shm works even when the container is read_only
             file_path = None
             try:
@@ -169,14 +169,14 @@ def send_ntfy_notification(ntfy_config, message, title, attachment: dict | None 
         headers["Authorization"] = f"{ntfy_config.get('authorization')}"
 
     try:
-        if attachment and (file := attachment.get("content", "").encode("utf-8")):
+        if attachment and (file_content := attachment.get("content", "").encode("utf-8")):
             headers["Filename"] = attachment.get("file_name", "attachment.txt")
             # When attaching a file the message can not be passed normally.
             # So if the message is short, include it as query param, else omit it
             if len(message) < 199:
                 response = requests.post(
                     f"{ntfy_config['url']}/{ntfy_config['topic']}?message={urllib.parse.quote(message)}",
-                    data=file,
+                    data=file_content,
                     headers=headers
                 )
             else:
