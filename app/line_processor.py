@@ -85,19 +85,9 @@ class LogProcessor:
         """
         returned_keywords = []
         for item in keywords:
-            if isinstance(item, (KeywordItem)):
-                self.logger.debug(f"Keyword item: {item}")
-                returned_keywords.append((item.model_dump()))
-            elif isinstance(item, RegexItem):
-                self.logger.debug(f"Regex item: {item}")
-                returned_keywords.append((item.model_dump()))
-            elif isinstance(item, KeywordGroup):
-                self.logger.debug(f"Keyword group: {item}")
-                keyword_dict = item.model_dump()
-                keyword_dict["keyword_group"] = tuple(keyword_dict["keyword_group"])
-                self.logger.debug(f"Keyword dict: {keyword_dict}")
-                returned_keywords.append(keyword_dict)
-            elif isinstance(item, str):
+            if isinstance(item, (KeywordItem, RegexItem, KeywordGroup)):
+                item = item.model_dump()
+            if isinstance(item, str):
                 returned_keywords.append(({"keyword": item}))
             elif isinstance(item, dict) and "keyword_group" in item:
                 item["keyword_group"] = tuple(item["keyword_group"])
@@ -131,7 +121,6 @@ class LogProcessor:
             "action_cooldown": unt_cnf.get("action_cooldown") or config.settings.action_cooldown or 300,
         }
         self.multi_line_mode = config.settings.multi_line_entries
-        # self.action_cooldown= unt_cnf.get("action_cooldown") or config.settings.action_cooldown or 300
         self.start_flush_thread_if_needed()
 
 
@@ -164,9 +153,8 @@ class LogProcessor:
                 self.logger.debug(f"{self.unit_name}: Found pattern: {pattern} with {count} matches of {self.line_count} lines. {round(count / self.line_count * 100, 2)}%")
                 self.valid_pattern = True
                 self.start_flush_thread_if_needed()
-        if self.line_count >= self.line_limit:
-            if self.patterns == []:
-                self.logger.info(f"{self.unit_name}: No pattern found in logs after {self.line_limit} lines. Mode: single-line")
+        if self.line_count >= self.line_limit and not self.patterns:
+            self.logger.info(f"{self.unit_name}: No pattern found in logs after {self.line_limit} lines. Mode: single-line")
 
         self.waiting_for_pattern = False
 
@@ -200,7 +188,7 @@ class LogProcessor:
     def start_flush_thread_if_needed(self):
         def check_flush():
             """
-            Background thread: flushes buffer if timeout is reached or container stops.
+            Background thread: flushes buffer after one second passed since last log line.
             """
             self.logger.debug(f"Flush Thread started for {self.unit_name}.")
             self.flush_thread_stopped.clear()
@@ -380,10 +368,6 @@ class LogProcessor:
                         hostname=self.hostname)
 
     def _log_attachment(self, number_attachment_lines):
-        """
-        Write the last N lines of container logs to a temporary file for notification attachment.
-        Returns the file path or None on error.
-        """
         file_name = f"last_{number_attachment_lines}_lines_from_{self.unit_name}.log"
         try:
             log_tail = self.tail_logs(lines=number_attachment_lines)

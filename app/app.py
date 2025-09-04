@@ -66,9 +66,7 @@ def format_message(messages, alt_text):
 
 def ensure_config_template():
     """
-    Replicates the legacy entrypoint.sh behavior:
-    - If /config exists and neither /config/config_template.yaml nor /config/config.yaml exist,
-      download the template file into /config/config_template.yaml.
+    Download config template if it or config.yaml does not exist.
     """
     config_dir = "/config"
     config_template = os.path.join(config_dir, "config_template.yaml")

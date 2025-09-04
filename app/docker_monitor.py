@@ -181,7 +181,7 @@ class DockerLogMonitor:
                 if unit_config is None:
                     self.logger.error(f"Could not validate swarm service config for '{service_name}' from labels. Skipping.\nLabels: {service_labels}")
                     return None
-                self.logger.info(f"Validated swarm service config for '{service_name}' from labels:\n{get_pretty_yaml_config(unit_config, top_level_key=service_name)}")
+                self.logger.info(f"Validated swarm service config for '{unit_name}' from labels:\n{get_pretty_yaml_config(unit_config, top_level_key=service_name)}")
                 return ContainerConfig(MonitorType.SWARM, service_name, unit_name, unit_config, cname, cid, config_via_labels=True)
             elif decision == MonitorDecision.SKIP:
                 return None
@@ -695,8 +695,8 @@ class DockerLogMonitor:
                 self.logger.info(f"Container {container_name} has been started. Status: {container.status}")
                 return f"{container_name} has been started!"
         except Exception as e:
-            self.logger.error(f"Failed to {action} {unit_name}: {e}")
-        return f"failed to {action} {container_name}"    
+            self.logger.error(f"Failed to {action_name} {container_name}: {e}")
+        return f"failed to {action_name} {container_name}"    
 
 
 def check_monitor_label(labels) -> MonitorDecision:

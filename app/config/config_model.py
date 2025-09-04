@@ -24,7 +24,7 @@ class BaseConfigModel(BaseModel):
         arbitrary_types_allowed=False,
     )
 
-class ExcludedKeyword(BaseConfigModel):
+class ExcludedKeywords(BaseConfigModel):
     keyword: Optional[str] = None
     regex: Optional[str] = None
 
@@ -47,7 +47,7 @@ class Settings(BaseConfigModel):
     action_cooldown: Optional[int] = 300
     attachment_lines: int = 20
     hide_regex_in_title: Optional[bool] = False
-    excluded_keywords: Optional[List[Union[str, ExcludedKeyword]]] = None
+    excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = None
     disable_notifications: Optional[bool] = None
     olivetin_url: Optional[str] = None
     olivetin_username: Optional[str] = None
@@ -76,7 +76,7 @@ class ModularSettings(BaseConfigModel):
     notification_title: Optional[str] = None
     action_cooldown: Optional[int] = None
     attach_logfile: Optional[bool] = None
-    excluded_keywords: Optional[List[Union[str, ExcludedKeyword]]] = None
+    excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = None
     hide_regex_in_title: Optional[bool] = None
     disable_notifications: Optional[bool] = None
 
@@ -108,7 +108,6 @@ class KeywordItemBase(ModularSettings):
 class RegexItem(KeywordItemBase):
     """
     Model for a regex-based keyword with optional settings.
-    The template can be used to format the notification title using named caputuring groups.
     """
     regex: str
     template: Optional[str] = None
@@ -121,20 +120,17 @@ class KeywordItem(KeywordItemBase):
 
 class KeywordGroup(KeywordItemBase):
     """
-    Model for a group of keywords (all of them have to be found in a log line to trigger a notification).
+    Model for a group of keywords.
     """
     keyword_group: List[Union[str, KeywordItem, RegexItem]] = []
 
 class KeywordBase(BaseModel):
-    """
-    Base model for keyword lists, with pre-validation to handle legacy and misconfigured entries.
-    """
     _DISALLOW_ACTION: ClassVar[bool] = False
 
     keywords: List[Union[str, KeywordItem, RegexItem, KeywordGroup]] = []
 
     @model_validator(mode="before")
-    def validate_keywords(cls, data: dict) -> dict:
+    def int_to_string(cls, data: dict) -> dict:
         """
         Convert integer keywords to strings and filter out misconfigured entries before validation.
         """
@@ -159,7 +155,6 @@ class KeywordBase(BaseModel):
                             or not any(action.value in item["action"].split('@')[0] for action in Actions)):
                                 logging.warning(f"Ignoring Error in config in field {get_kw_or_rgx(item)}: Invalid action: '{item['action']}'.")
                                 item["action"] = None
-                                continue
                             elif cls._DISALLOW_ACTION and len(item["action"].split('@')) < 2:
                                 logging.warning(f"Actions on swarm containers/services are not allowed. Removing action '{item['action']}' for {get_kw_or_rgx(item)}")
                                 item["action"] = None
@@ -237,7 +232,7 @@ class GlobalConfig(BaseConfigModel):
     def transform_legacy_format(cls, values):
         """Migrate legacy list-based container definitions to dictionary format."""
         # Convert list containers to dict format
-        for container_object in ["containers", "swarm_services"]:
+        for container_object in ["containers", "swarm_services", "systemd_services"]:
             if isinstance(values.get(container_object), list):
                 values[container_object] = {name: {} for name in values[container_object]}
             for container in values.get(container_object, {}):
@@ -269,8 +264,13 @@ class GlobalConfig(BaseConfigModel):
         return self
 
 def validate_action_cooldown(v):
-    v = int(v)
-    if v is not None and v < 10:
+    if v is None:
+        return None
+    try:
+        v = int(v)
+    except ValueError:
+        return None
+    if v < 10:
         logging.warning("Action cooldown must be at least 10 seconds. Setting to 10 seconds")
         return 10
     return v
