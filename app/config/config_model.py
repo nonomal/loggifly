@@ -5,8 +5,6 @@ from pydantic import (
     ConfigDict,
     SecretStr,
     ValidationError,
-    Field,
-    AfterValidator
 )
 from enum import Enum
 from constants import Actions
@@ -15,7 +13,9 @@ import logging
 import re
 import copy
 
+
 class BaseConfigModel(BaseModel):
+    """Base configuration model with common Pydantic settings."""
     model_config = ConfigDict(
         extra="ignore",
         validate_default=True,
@@ -24,13 +24,16 @@ class BaseConfigModel(BaseModel):
         arbitrary_types_allowed=False,
     )
 
+
 class ExcludedKeywords(BaseConfigModel):
+    """Model for excluded keyword definitions that can be keyword-based or regex-based."""
     keyword: Optional[str] = None
     regex: Optional[str] = None
 
+
 class Settings(BaseConfigModel):    
     """
-    Application-wide settings for logging, notifications, and feature toggles.
+    Application-wide settings.
     """
     log_level: str = "INFO"
     multi_line_entries: bool = True
@@ -55,10 +58,14 @@ class Settings(BaseConfigModel):
 
     @field_validator("action_cooldown", mode="before")
     def validate_action_cooldown(cls, v):
+        """Validate action cooldown with minimum value enforcement."""
         return validate_action_cooldown(v)
+
+
 class ModularSettings(BaseConfigModel):
     """
     Optional settings that can be overridden per keyword or container.
+    These settings allow fine-grained control at different configuration levels.
     """
     ntfy_tags: Optional[str] = None
     ntfy_topic: Optional[str] = None
@@ -94,23 +101,29 @@ class ModularSettings(BaseConfigModel):
             return None
         return validate_action_cooldown(v)
 
+
 class KeywordItemBase(ModularSettings):
+    """Base class for keyword items with common fields for actions and templates."""
     json_template: Optional[str] = None
     action: Optional[str] = None
     olivetin_action_id: Optional[str] = None
 
     @field_validator("action")
     def validate_action(cls, v):
+        """Validate action against available actions enum."""
         if v and not any(a.value == v.split('@')[0] for a in Actions):
             return None
         return v
 
+
 class RegexItem(KeywordItemBase):
     """
     Model for a regex-based keyword with optional settings.
+    Template allows for notification formatting using named capturing groups.
     """
     regex: str
     template: Optional[str] = None
+
 
 class KeywordItem(KeywordItemBase):
     """
@@ -118,13 +131,17 @@ class KeywordItem(KeywordItemBase):
     """
     keyword: str
 
+
 class KeywordGroup(KeywordItemBase):
     """
-    Model for a group of keywords.
+    Model for a group of keywords that must all be present in a log line.
+    All keywords in the group must match for the group to trigger.
     """
     keyword_group: List[Union[str, KeywordItem, RegexItem]] = []
 
+
 class KeywordBase(BaseModel):
+    """Base class for keyword configuration with validation logic."""
     _DISALLOW_ACTION: ClassVar[bool] = False
 
     keywords: List[Union[str, KeywordItem, RegexItem, KeywordGroup]] = []
@@ -133,12 +150,14 @@ class KeywordBase(BaseModel):
     def int_to_string(cls, data: dict) -> dict:
         """
         Convert integer keywords to strings and filter out misconfigured entries before validation.
+        Also validates actions and regex patterns.
         """
         if "keywords" in data and isinstance(data["keywords"], list):
             converted = []
             for item in data["keywords"]:
                 if isinstance(item, dict):
                     keys = list(item.keys())
+                    # Validate required keys
                     if "keyword" not in item and "regex" not in item and "keyword_group" not in item:
                         logging.warning(f"Ignoring Error in config in field {get_kw_or_rgx(item)}: You have to set 'keyword', 'regex' or 'keyword_group' as a key.")
                         continue
@@ -148,6 +167,7 @@ class KeywordBase(BaseModel):
                     elif "regex" in item and not validate_regex(item["regex"]):
                         logging.warning(f"Ignoring Error in config in field {get_kw_or_rgx(item)}: Invalid regex.")
                         continue
+                    # Validate and convert fields
                     for key in keys:
                         if key == "action":
                             if (not isinstance(item["action"], str) 
@@ -169,26 +189,33 @@ class KeywordBase(BaseModel):
                         continue
             data["keywords"] = converted
         return data
-    
+
+
 class ContainerConfig(KeywordBase, ModularSettings):    
     """
     Model for per-container configuration, including keywords and setting overrides.
+    Allows targeting specific hosts when multiple Docker hosts are configured.
     """
     hosts: Optional[str] = None
 
     @field_validator("ntfy_priority", mode="before")
     def validate_priority(cls, v):
         return validate_priority(v)
-    
+
+
 class SwarmServiceConfig(KeywordBase, ModularSettings):
     """
     Model for per-swarm service configuration, inheriting from ContainerConfig.
+    Actions on swarm services are not allowed.
     """
     _DISALLOW_ACTION: ClassVar[bool] = True
     hosts: Optional[str] = None
 
+
 class GlobalKeywords(BaseConfigModel, KeywordBase):
+    """Global keyword configuration that applies to all monitored containers."""
     pass
+
 
 class NtfyConfig(BaseConfigModel):
     url: str 
@@ -201,27 +228,35 @@ class NtfyConfig(BaseConfigModel):
 
     @field_validator("priority", mode="before")
     def validate_priority(cls, v):
+        """Validate ntfy priority value."""
         return validate_priority(v)
+
+
 class AppriseConfig(BaseConfigModel):  
     url: SecretStr 
+
 
 class WebhookConfig(BaseConfigModel):
     url: str
     headers: Optional[dict]
 
+
 class NotificationsConfig(BaseConfigModel):
+    """Configuration for all notification services."""
     ntfy: Optional[NtfyConfig] = None
     apprise: Optional[AppriseConfig] = None
     webhook: Optional[WebhookConfig] = None
 
     @model_validator(mode="after")
     def check_at_least_one(self) -> "NotificationsConfig":
+        """Warn if no notification services are configured."""
         if self.ntfy is None and self.apprise is None and self.webhook is None:
             logging.warning("You haven't configured any notification services. Notifications will not be sent.")
         return self
 
+
 class GlobalConfig(BaseConfigModel):
-    """Root configuration model for the application"""
+    """Root configuration model for the application."""
     containers: dict[str, ContainerConfig] | None = None
     swarm_services: dict[str, SwarmServiceConfig] | None = None
     global_keywords: GlobalKeywords
@@ -248,7 +283,7 @@ class GlobalConfig(BaseConfigModel):
     
     @model_validator(mode="after")
     def check_at_least_one(self) -> "GlobalConfig":
-        # Ensure at least one container or swarm service and at least one keyword is configured
+        """Ensure at least one container or swarm service and at least one keyword is configured."""
         if not self.containers and not self.swarm_services:
             raise ValueError("You have to configure at least one container")
         all_keywords = copy.deepcopy(self.global_keywords.keywords)
@@ -263,7 +298,11 @@ class GlobalConfig(BaseConfigModel):
             raise ValueError("No keywords configured. You have to set keywords either per container or globally.")
         return self
 
+
 def validate_action_cooldown(v):
+    """
+    Validate action cooldown value with minimum threshold enforcement.
+    """
     if v is None:
         return None
     try:
@@ -278,8 +317,7 @@ def validate_action_cooldown(v):
 
 def validate_priority(v):
     """
-    Validate and normalize the priority value for notifications. Accepts both string and integer representations.
-    Returns a valid priority or the default if invalid.
+    Validate and normalize the ntfy priority value. 
     """
     if isinstance(v, str):
         try:
@@ -297,7 +335,11 @@ def validate_priority(v):
             return 3
     return v
 
+
 def validate_regex(v):
+    """
+    Validate a regex pattern by attempting to compile it.
+    """
     try:
         re.compile(v)
     except re.error as e:
@@ -305,7 +347,11 @@ def validate_regex(v):
         return False 
     return True
 
+
 def get_kw_or_rgx(item):
+    """
+    Extract the keyword, regex, or keyword_group from a config item for error reporting.
+    """
     if isinstance(item, dict):
         if "keyword" in item:
             return f"keyword: '{item['keyword']}'"

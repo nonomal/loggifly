@@ -9,7 +9,8 @@ import urllib.parse
 from config.config_model import GlobalConfig, ContainerConfig, SwarmServiceConfig
 
 logger = logging.getLogger(__name__)
-logging.getLogger("apprise").setLevel(logging.WARNING)
+logging.getLogger("apprise").setLevel(logging.INFO)
+
 
 def get_ntfy_config(config: GlobalConfig, message_config, unit_config) -> dict:
     """
@@ -32,6 +33,7 @@ def get_ntfy_config(config: GlobalConfig, message_config, unit_config) -> dict:
     unit_config_dict = unit_config.model_dump(exclude_none=True) if unit_config else {}
     message_config = message_config if message_config else {}
 
+    # Merge configurations with precedence order
     for key in ntfy_config.keys():
         ntfy_key = "ntfy_" + key
         if message_config.get(ntfy_key) is not None:
@@ -41,10 +43,12 @@ def get_ntfy_config(config: GlobalConfig, message_config, unit_config) -> dict:
         elif global_config.get(key) is not None:
             ntfy_config[key] = global_config.get(key)
 
+    # Extract secret values
     for key, value in ntfy_config.items():
         if value and isinstance(value, SecretStr):
             ntfy_config[key] = value.get_secret_value()
 
+    # Build authorization header
     if ntfy_config.get("token"):
         ntfy_config["authorization"] = f"Bearer {ntfy_config['token']}"
     elif ntfy_config.get('username') and ntfy_config.get('password'):
@@ -65,7 +69,7 @@ def get_apprise_url(config: GlobalConfig, message_config, unit_config) -> str | 
     unit_config_dict = unit_config.model_dump(exclude_none=True) if unit_config else {}
     message_config = message_config if message_config else {}
 
-
+    # Get URL with precedence order
     if message_config.get("apprise_url"):
         apprise_url = message_config.get("apprise_url")
     elif unit_config_dict.get("apprise_url"):
@@ -73,6 +77,7 @@ def get_apprise_url(config: GlobalConfig, message_config, unit_config) -> str | 
     elif global_config.get("url"):
         apprise_url = global_config.get("url")
 
+    # Extract secret value if needed
     if apprise_url and isinstance(apprise_url, SecretStr):
         apprise_url = apprise_url.get_secret_value() if apprise_url else None
     return apprise_url
@@ -89,6 +94,7 @@ def get_webhook_config(config: GlobalConfig, message_config, unit_config) -> dic
     unit_config_dict = unit_config.model_dump(exclude_none=True) if unit_config else {}
     message_config = message_config if message_config else {}
 
+    # Merge configurations with precedence order
     for key in webhook_config.keys():
         webhook_key = "webhook_" + key
         if message_config.get(webhook_key) is not None:
@@ -146,6 +152,7 @@ def send_apprise_notification(url, message, title, attachment: dict | None = Non
     except Exception as e:
         logger.error("Error while trying to send apprise-notification: %s", e)
     finally:
+        # Clean up temporary attachment file if it exists
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
@@ -182,7 +189,7 @@ def send_ntfy_notification(ntfy_config, message, title, attachment: dict | None 
             else:
                 response = requests.post(
                     f"{ntfy_config['url']}/{ntfy_config['topic']}",
-                    data=file,
+                    data=file_content,
                     headers=headers
                 )
         else:
@@ -238,14 +245,17 @@ def send_notification(config: GlobalConfig,
     # If multiple hosts are set, prepend hostname to title
     title = f"[{hostname}] - {title}" if hostname else title
 
+    # Send ntfy notification if configured
     ntfy_config = get_ntfy_config(config, message_config, unit_config)
     if (ntfy_config and ntfy_config.get("url") and ntfy_config.get("topic")):
         send_ntfy_notification(ntfy_config, message=message, title=title, attachment=attachment)
 
+    # Send Apprise notification if configured
     apprise_url = get_apprise_url(config, message_config, unit_config)
     if apprise_url:
         send_apprise_notification(apprise_url, message=message, title=title, attachment=attachment)
 
+    # Send webhook notification if configured
     webhook_config = get_webhook_config(config, message_config, unit_config)
     if (webhook_config and webhook_config.get("url")):
         keywords = message_config.get("keywords_found", None) if message_config else None
