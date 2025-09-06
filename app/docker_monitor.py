@@ -13,15 +13,17 @@ import docker.errors
 from datetime import datetime
 from notifier import send_notification
 from line_processor import LogProcessor
+from config.config_model import GlobalConfig
 from config.load_config import validate_unit_config, get_pretty_yaml_config
 from constants import (
     Actions,
     MonitorType, 
     MonitorDecision, 
-    Actions
 )
 
+
 class ContainerConfig:
+
     def __init__(self, monitor_type, config_key, unit_name, unit_config, container_name, container_id, config_via_labels=False):
         self.monitor_type = monitor_type  # MonitorType.CONTAINER or MonitorType.SWARM
         self.config_key = config_key  # The key used in the configuration (for swawrm it can be stack or service name)
@@ -31,7 +33,9 @@ class ContainerConfig:
         self.container_name = container_name
         self.container_id = container_id
 
+
 class MonitoredContainerContext(ContainerConfig):
+
     def __init__(self, monitor_type, config_key, unit_name, container_name, container_id, unit_config, config_via_labels):
         super().__init__(monitor_type, config_key, unit_name, unit_config, container_name, container_id, config_via_labels)
         self.generation = 0  # Used to track container restarts
@@ -54,12 +58,16 @@ class MonitoredContainerContext(ContainerConfig):
 
     def set_processor(self, processor):
         self.processor = processor
-                                    
+
+
 class MonitoredContainerRegistry:
     """
     Registry of monitored containers and formerly monitored containers.
+    Provides lookup by container ID and unit name.
     """
+    
     def __init__(self):
+        """Initialize empty registry with lookup indexes."""
         self._by_id = {}
         self._by_unit_name = {}
 
@@ -75,35 +83,43 @@ class MonitoredContainerRegistry:
         return self._by_id.get(container_id)
     
     def get_by_unit_name(self, monitor_type, unit_name):
+       
         return self._by_unit_name.get((monitor_type, unit_name))
             
     def get_actively_monitored(self, monitor_type=None):
         """
-        Returns a list of actively monitored containers.
+        Return a list of actively monitored containers.
+        
         Args:
-            monitor_type: Either None (meaning all), MonitorType.CONTAINER, or MonitorType.SWARM
+            monitor_type: Filter by MonitorType.CONTAINER, MonitorType.SWARM, or None for all
+            
+        Returns:
+            list: List of actively monitored container contexts
         """
         if monitor_type == MonitorType.SWARM:
             return [
-                container for container in self._by_id.values()
-                if not container.monitoring_stopped_event.is_set() and container.monitor_type == MonitorType.SWARM
+                ctx for ctx in self._by_id.values()
+                if not ctx.monitoring_stopped_event.is_set() and ctx.monitor_type == MonitorType.SWARM
             ]
         elif monitor_type == MonitorType.CONTAINER:   
             return [
-                container for container in self._by_id.values()
-                if not container.monitoring_stopped_event.is_set() and container.monitor_type == MonitorType.CONTAINER
+                ctx for ctx in self._by_id.values()
+                if not ctx.monitoring_stopped_event.is_set() and ctx.monitor_type == MonitorType.CONTAINER
             ]
         else:
-            return [container for container in self._by_id.values() if not container.monitoring_stopped_event.is_set()]
+            return [ctx for ctx in self._by_id.values() if not ctx.monitoring_stopped_event.is_set()]
 
     def update_id(self, old_id, new_id):
+        """Update container ID in registry when container is recreated."""
         if (container_context := self._by_id.pop(old_id, None)) is not None:
             container_context.container_id = new_id
             self._by_id[new_id] = container_context
 
     def values(self):
+        """Get all container contexts in the registry."""
         return self._by_id.values()
-    
+
+
 class DockerLogMonitor:
     """
     Monitors Docker containers and events for a given host.
@@ -111,7 +127,9 @@ class DockerLogMonitor:
     Starts a thread for each monitored container and a thread for Docker event monitoring.
     Handles config reloads, container start/stop, and log processing.
     """
+    
     def __init__(self, config, hostname, host):
+        """Initialize Docker log monitor for a specific host."""
         self.hostname = hostname  # empty string if only one client is being monitored, otherwise the hostname of the client do differentiate between the hosts
         self.host = host
         self.config = config
@@ -127,10 +145,8 @@ class DockerLogMonitor:
         self.selected_containers = []
         self.selected_swarm_services = []
         
-    def init_logging(self):
-        """
-        Configure logger to include hostname for multi-host or swarm setups.
-        """
+    def _init_logging(self):
+        """Configure logger to include hostname for multi-host or swarm setups."""
         self.logger = logging.getLogger(f"Monitor-{self.hostname}")
         self.logger.handlers.clear()
         handler = logging.StreamHandler()
@@ -149,7 +165,10 @@ class DockerLogMonitor:
             self.threads.append(thread)
 
     def _get_selected_containers(self):
-        # Build lists of containers and swarm services to monitor based on config
+        """
+        Build lists of containers and swarm services to monitor based on config.
+        Respects host filtering when multiple Docker hosts are configured.
+        """
         self.selected_containers = []
         self.selected_swarm_services = []
         for (config, selected, type_placeholder) in [
@@ -167,7 +186,8 @@ class DockerLogMonitor:
                         continue
                 selected.append(object_name)
 
-    def should_monitor(self, container, skip_labels=False) -> ContainerConfig | None:
+    def _should_monitor(self, container, skip_labels=False) -> ContainerConfig | None:
+        """Determine if a container should be monitored based on configuration and labels."""
         cname = container.name
         cid = container.id
 
@@ -185,7 +205,7 @@ class DockerLogMonitor:
                 return ContainerConfig(MonitorType.SWARM, service_name, unit_name, unit_config, cname, cid, config_via_labels=True)
             elif decision == MonitorDecision.SKIP:
                 return None
-            elif decision == MonitorDecision.UNKNOWN:
+            elif decision == MonitorDecision.UNKNOWN and self.config.swarm_services:
                 if service_name in self.selected_swarm_services:
                     return ContainerConfig(MonitorType.SWARM, service_name, unit_name, self.config.swarm_services[service_name], cname, cid)
                 elif stack_name in self.selected_swarm_services:
@@ -205,7 +225,7 @@ class DockerLogMonitor:
         elif decision == MonitorDecision.SKIP:
             return None
         # Check if the container is configured via normal configuration
-        elif decision == MonitorDecision.UNKNOWN and container.name in self.selected_containers:
+        elif decision == MonitorDecision.UNKNOWN and container.name in self.selected_containers and self.config.containers:
             return ContainerConfig(MonitorType.CONTAINER, cname, cname, self.config.containers[cname], cname, cid)
         return None
 
@@ -213,8 +233,10 @@ class DockerLogMonitor:
         """ 
         Check if a container should be monitored based on its configuration and labels
         and start the monitoring.
+        Returns:
+            bool: True if monitoring was started, False otherwise
         """
-        container_config = self.should_monitor(container, skip_labels=skip_labels)
+        container_config = self._should_monitor(container, skip_labels=skip_labels)
         if container_config is None:
             return False
         if socket.gethostname() == container.id[:12]:
@@ -222,11 +244,12 @@ class DockerLogMonitor:
             return False
 
         # Start monitoring the container
-        container_context = self.prepare_monitored_container_context(container, container_config)
+        container_context = self._prepare_monitored_container_context(container, container_config)
         self._start_monitoring_thread(container, container_context)
         return True
 
-    def prepare_monitored_container_context(self, container, container_config) -> MonitoredContainerContext:
+    def _prepare_monitored_container_context(self, container, container_config: ContainerConfig) -> MonitoredContainerContext:
+        """Prepare or reuse monitoring context for a container."""
         # Check if we already have a context for this container and maybe stop the old monitoring thread
         if ctx := self._registry.get_by_unit_name(container_config.monitor_type, container_config.unit_name):   
             # Close old stream connection to stop old monitoring thread if it exists
@@ -260,6 +283,7 @@ class DockerLogMonitor:
         return ctx
         
     def _close_stream_connection(self, container_id):
+        """Close log stream connection for a specific container."""
         if not container_id:
             self.logger.debug("No container_id provided to close stream connection.")
             return
@@ -279,12 +303,16 @@ class DockerLogMonitor:
         else:
             self.logger.debug(f"Could not find container context for container_id {container_id}. Cannot close stream connection.")
            
-    # This function is called from outside this class to start the monitoring
     def start(self, client) -> str:
         """
         Start monitoring for all configured containers and Docker events using the provided Docker client.
         Handles swarm mode and hostname assignment.
-        Returns a summary message to app.py.
+
+        Args:
+            client: Docker client instance
+            
+        Returns:
+            str: Summary message about started monitoring
         """
         self.client = client
 
@@ -306,7 +334,7 @@ class DockerLogMonitor:
                     self.hostname = ("manager" if manager else "worker") + "@" + self.client.info()["Name"]
                 except Exception as e:
                     self.hostname = ("manager" if manager else "worker") + "@" + socket.gethostname()
-        self.init_logging()
+        self._init_logging()
         if self.swarm_mode:
             self.logger.info(f"Running in swarm mode.")
 
@@ -318,7 +346,7 @@ class DockerLogMonitor:
         self._watch_events()
         return self._start_message()
 
-    def reload_config(self, config) -> str:
+    def reload_config(self, config: GlobalConfig) -> str:
         """
         Reload configuration and update monitoring for containers.
         Called by ConfigHandler when config.yaml changes or on reconnection.
@@ -338,13 +366,13 @@ class DockerLogMonitor:
                 if ctx.config_via_labels:
                     continue
                 if ctx.monitor_type == MonitorType.CONTAINER:
-                    ctx.unit_config = self.config.containers.get(ctx.config_key) or None
+                    ctx.unit_config = self.config.containers.get(ctx.config_key) if self.config.containers else None
                     ctx.processor.load_config_variables(self.config, ctx.unit_config)
                     if ctx.config_key not in self.selected_containers and not ctx.monitoring_stopped_event.is_set():
                         self.logger.debug(f"Container {ctx.config_key} is not in the config. Stopping monitoring.")
                         self._close_stream_connection(ctx.container_id)
                 elif ctx.monitor_type == MonitorType.SWARM:
-                    ctx.unit_config = self.config.swarm_services.get(ctx.config_key) or None
+                    ctx.unit_config = self.config.swarm_services.get(ctx.config_key) if self.config.swarm_services else None
                     ctx.processor.load_config_variables(self.config, ctx.unit_config)
                     if ctx.config_key not in self.selected_swarm_services and not ctx.monitoring_stopped_event.is_set():
                         self.logger.debug(f"Swarm Service {ctx.config_key} is not in the config. Stopping monitoring.")
@@ -361,10 +389,7 @@ class DockerLogMonitor:
         return ""
 
     def _start_message(self) -> str:
-        """
-        Compose and log/send a summary message about monitored containers and services.
-        Gets returned to start() or reload_config() and from there to app.py where the notification is sent.
-        """
+        """Compose a summary message about monitored containers and services."""
         messages = []
         monitored_container_names = [c.unit_name for c in self._registry.get_actively_monitored(monitor_type=MonitorType.CONTAINER)]
         unmonitored_containers = [c for c in self.selected_containers if c not in monitored_container_names]
@@ -414,9 +439,9 @@ class DockerLogMonitor:
 
         time.sleep(random.uniform(0.9, 1.2) * error_count)  # to prevent all threads from trying to reconnect at the same time
         return error_count, last_error_time, False
-    
 
-    def _start_monitoring_thread(self, container, container_context):
+    def _start_monitoring_thread(self, container, container_context: MonitoredContainerContext):
+        """Start a monitoring thread for a specific container."""
         def check_container(container_start_time, error_count):
             """
             Check if the container is still running and matches the original start time.
@@ -456,6 +481,9 @@ class DockerLogMonitor:
             gen = container_context.generation  # get the generation of the current thread to check if a new thread is started for this container
             unit_name = container_context.unit_name
             processor = container_context.processor
+            if not processor:
+                self.logger.error(f"Processor not found for container {unit_name}. Stopping monitoring.")
+                return
 
             while not self.shutdown_event.is_set() and not stop_monitoring_event.is_set():
                 buffer = b""
@@ -557,13 +585,14 @@ class DockerLogMonitor:
                         self.logger.info(f"Docker Event Watcher stopped. Reconnecting... {'error count: ' + str(error_count) if error_count > 0 else ''}")
             self.logger.info("Docker Event Watcher stopped.")
             self.event_stream = None
+            
         thread = threading.Thread(target=event_handler, daemon=True)
         self._add_thread(thread)
         thread.start()
 
     def cleanup(self, timeout=1.5):
         """
-        Clean up all monitoring threads and connections on shutdown or error wheh client is unreachable.
+        Clean up all monitoring threads and connections on shutdown or error when client is unreachable.
         Closes log streams, joins threads, and closes the Docker client.
         """
         self.logger.info(f"Starting cleanup for host {self.hostname}..." if self.hostname else "...")
@@ -595,13 +624,11 @@ class DockerLogMonitor:
             self.logger.warning(f"Error while trying do close docker client connection during cleanup: {e}")
 
         self.cleanup_event.clear()
-        # self.logger.debug(f"Threads still alive {len(alive_threads)}: {alive_threads}")
-        # self.logger.debug(f"Threading Enumerate: {threading.enumerate()}")                    
 
     def tail_logs(self, unit_name, monitor_type, lines=10) -> Optional[str]:
         """
-        Tail the last 'lines' of logs for a specific container.
-        Returns the last 'lines' of logs as a list of strings.
+        Tail the last n lines of logs for a specific container.
+        unit_name and monitor_type are used to get the container_id from the registry.
         """
         if container_context := self._registry.get_by_unit_name(monitor_type, unit_name):
             if container := self.client.containers.get(container_context.container_id):
@@ -624,6 +651,14 @@ class DockerLogMonitor:
     def container_action(self, monitor_type, unit_name, action):
         """
         Perform an action on a container (start, stop, restart).
+        
+        Args:
+            monitor_type: MonitorType.CONTAINER or MonitorType.SWARM
+            unit_name: Unique unit name
+            action: Action string (e.g., "restart", "stop@container_name")
+            
+        Returns:
+            str or None: Result message describing action outcome to append to a notification title
         """        
         action_parts = action.split("@")
         if len(action_parts) == 1:
@@ -700,7 +735,7 @@ class DockerLogMonitor:
 
 
 def check_monitor_label(labels) -> MonitorDecision:
-    """Extract and check the 'loggifly.monitor' label value"""
+    """Extract and check the 'loggifly.monitor' label value."""
     if labels is None:
         return MonitorDecision.UNKNOWN
     monitor_value = labels.get("loggifly.monitor", "").lower().strip()
@@ -713,7 +748,9 @@ def check_monitor_label(labels) -> MonitorDecision:
         
     return MonitorDecision.UNKNOWN
 
+
 def get_service_info(container, client) -> tuple[str, str, dict] | None:
+    """Get Docker Swarm service information from a container."""
     if not (service_id := container.labels.get("com.docker.swarm.service.id")):
         return None
     try:
@@ -726,9 +763,10 @@ def get_service_info(container, client) -> tuple[str, str, dict] | None:
         logging.error(f"Error getting service info for container {container.name}: {e}")
         return None
 
+
 def get_service_unit_name(labels) -> str | None:
     """
-    Tries to extract the service name with their replica id from container labels so that we have a unique name for each replica.
+    Extract the service name with their replica id from container labels so that we have a unique name for each replica.
     Converts service_name.1.1234567890 to service_name.1
     """
     task_id = labels.get("com.docker.swarm.task.id")
@@ -746,7 +784,9 @@ def get_service_unit_name(labels) -> str | None:
     else:
         return service_name or stack_name
 
+
 def parse_label_config(labels: dict) -> dict[str, Any]:
+    """Parse LoggiFly configuration from Docker labels."""
     keywords_by_index = {}
     config = {}
     if labels.get("loggifly.monitor", "false").lower() != "true":

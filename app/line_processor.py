@@ -16,12 +16,13 @@ from constants import (
     COMPILED_FLEX_PATTERNS,
 )
 
+
 class LogProcessor:
     """
     Processes Docker container log lines to:
     - Detect and handle multi-line log entries using start patterns.
     - Search for keywords and regex patterns.
-    - Trigger notifications and container actions (restart/stop) on matches.
+    - Trigger notifications and container actions on matches.
 
     Pattern detection enables grouping of multi-line log entries 
     because every line that does not match the detected pattern is treated as part of the previous entry and added to the buffer.
@@ -40,14 +41,28 @@ class LogProcessor:
                  unit_stop_event,
                  hostname=None 
                  ):
+        """
+        Initialize the log processor for a specific container or service.
+        
+        Args:
+            logger: Logger instance for this processor
+            config: Global configuration object
+            unit_config: Container/service specific configuration
+            monitor_instance: DockerMonitor instance from which the processor is called
+            unit_name: Unique name for the monitored unit
+            monitor_type: MonitorType.CONTAINER or MonitorType.SWARM
+            unit_stop_event: Event to signal when to stop processing
+            hostname: Hostname for multi-client setups (None if single client)
+        """
         self.logger = logger
         self.hostname = hostname    # Hostname for multi-client setups to differentiate between clients; empty if single client
         self.unit_stop_event = unit_stop_event
         self.unit_name = unit_name
-        self.monitor_type = monitor_type # container, swarm
-        self.monitor_instance = monitor_instance # DockerMonitor instance from which the processor is called
+        self.monitor_type = monitor_type
+        self.monitor_instance = monitor_instance
         self.unit_config = unit_config
 
+        # Pattern detection state
         self.patterns = []
         self.patterns_count = {pattern: 0 for pattern in self.__class__.COMPILED_STRICT_PATTERNS + self.__class__.COMPILED_FLEX_PATTERNS}
         self.lock_buffer = Lock()
@@ -65,13 +80,14 @@ class LogProcessor:
         self.time_per_action = {}
 
         self.load_config_variables(config, unit_config)
+        
         # If multi-line mode is on, find starting pattern in logs
         if self.multi_line_mode is True:
             self.log_stream_last_updated = time.time()
             self.new_line_event = threading.Event()
             self.buffer = []
             if self.valid_pattern is False:
-                log_tail = self.tail_logs(lines=100)
+                log_tail = self._tail_logs(lines=100)
                 if log_tail:
                     self._find_starting_pattern(log_tail)
                 if self.valid_pattern:
@@ -81,15 +97,16 @@ class LogProcessor:
 
     def _get_keywords(self, keywords):
         """
-        Normalize and return a list of keyword/regex dicts from various input types. excluded_keywords come as a list of dicts.
+        Normalize and return a list of keyword/regex dicts from various input types. 
         """
         returned_keywords = []
         for item in keywords:
-            if isinstance(item, (KeywordItem, RegexItem, KeywordGroup)):
-                item = item.model_dump()
             if isinstance(item, str):
                 returned_keywords.append(({"keyword": item}))
-            elif isinstance(item, dict) and "keyword_group" in item:
+                continue
+            if isinstance(item, (KeywordItem, RegexItem, KeywordGroup)):
+                item = item.model_dump()
+            if isinstance(item, dict) and "keyword_group" in item:
                 item["keyword_group"] = tuple(item["keyword_group"])
                 returned_keywords.append(item)
             elif isinstance(item, dict) and ("keyword" in item or "regex" in item):
@@ -98,18 +115,25 @@ class LogProcessor:
                 self.logger.debug(f"Did not find correct item type for item: {item}")
         return returned_keywords
 
-    def load_config_variables(self, config, unit_config):
+    def load_config_variables(self, config: GlobalConfig, unit_config):
         """
         Load and merge configuration for global and container-specific keywords and settings.
         Called on initialization and when reloading config.
+        
+        Args:
+            config: Global configuration object
+            unit_config: ContainerConfig or SwarmServiceConfig
         """
         self.config = config
         self.unit_config = unit_config
         self.time_per_keyword = {}
         unt_cnf = self.unit_config.model_dump() if self.unit_config else {}
+        
+        # Merge global and unit-specific keywords
         self.keywords = self._get_keywords(unt_cnf.get("keywords", []))
         self.keywords.extend(self._get_keywords(self.config.global_keywords.keywords))        
 
+        # Merge message configuration with precedence: unit_config > global_config
         self.container_msg_cnf = {
             "attachment_lines": unt_cnf.get("attachment_lines") or config.settings.attachment_lines,
             "notification_cooldown": unt_cnf.get("notification_cooldown") if unt_cnf.get("notification_cooldown") is not None else config.settings.notification_cooldown,
@@ -123,29 +147,34 @@ class LogProcessor:
         self.multi_line_mode = config.settings.multi_line_entries
         self.start_flush_thread_if_needed()
 
-
     def _find_starting_pattern(self, log):
         """
         Analyze log lines to identify patterns that mark the beginning of new log entries.
         If a pattern is detected frequently enough, it is added to self.patterns and self.valid_pattern is set to True, enabling multi-line log entry grouping.
         If no pattern is found after scanning, self.valid_pattern remains False and the processor falls back to single-line mode (treating each line as a separate entry).
+        
+        Args:
+            log: String containing one or multiple log lines to analyze
         """
         self.waiting_for_pattern = True
         for line in log.splitlines():
-            clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line)
+            clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line)  # Remove ANSI color codes
             self.line_count += 1
+            # Try strict patterns first (higher priority)
             for pattern in self.__class__.COMPILED_STRICT_PATTERNS:
                 if pattern.search(clean_line):
                     self.patterns_count[pattern] += 1
                     break
             else:
+                # Fall back to flex patterns if no strict pattern matches
                 for pattern in self.__class__.COMPILED_FLEX_PATTERNS:
                     if pattern.search(clean_line):
                         self.patterns_count[pattern] += 1
                         break
 
+        # Determine which patterns are frequent enough to be considered valid
         sorted_patterns = sorted(self.patterns_count.items(), key=lambda x: x[1], reverse=True)
-        threshold = max(5, int(self.line_count * 0.075))
+        threshold = max(5, int(self.line_count * 0.075))  # At least 7.5% of lines or minimum 5 matches
         
         for pattern, count in sorted_patterns:
             if pattern not in self.patterns and count > threshold:
@@ -158,9 +187,10 @@ class LogProcessor:
 
         self.waiting_for_pattern = False
 
-    def get_message_config(self, keyword_message_config):
+    def _get_message_config(self, keyword_message_config):
         """
         Merge container-level message config into keyword-level config for a single message.
+        With keyword level settings taking precedence over container level settings.
         """
         for key, value in self.container_msg_cnf.items():
             if key not in keyword_message_config:
@@ -169,12 +199,13 @@ class LogProcessor:
                 keyword_message_config[key].extend(value)
         return keyword_message_config
 
-    def process_line(self, line):
+    def process_line(self, line: str):
         """        
         Entry point for processing a single log line. 
-        If multi-line mode is off or no pattern is detected, processes as single line; otherwise, processes as part of a multi-line entry.
+        If multi-line mode is off or no pattern is detected, processes as single line; 
+        otherwise, processes as part of a multi-line entry.
         """
-        clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line)
+        clean_line = re.sub(r"\x1b\[[0-9;]*m", "", line)  # Remove ANSI color codes
         if self.multi_line_mode is False:
             self._search_and_send(clean_line)
         else:
@@ -186,6 +217,7 @@ class LogProcessor:
                 self._search_and_send(clean_line)
 
     def start_flush_thread_if_needed(self):
+        """Start the buffer flush thread if multi-line mode is enabled and a valid pattern is detected."""
         def check_flush():
             """
             Background thread: flushes buffer after one second passed since last log line.
@@ -222,7 +254,7 @@ class LogProcessor:
         else:
             self.logger.debug(f"Buffer for {self.unit_name} was empty, nothing to process.")
 
-    def _process_multi_line(self, line):
+    def _process_multi_line(self, line: str):
         """
         In multi-line mode, determine if the line starts a new entry (pattern match).
         If so, flush buffer; otherwise, append line to buffer.
@@ -250,17 +282,18 @@ class LogProcessor:
         self.log_stream_last_updated = time.time()
         self.new_line_event.set()
 
-
     def _search_keyword(self, log_line, keyword_dict, ignore_keyword_time=False):
         """
         Search for keyword or regex in log_line. Enforce notification cooldown unless ignore_keyword_time is True.
-        Returns the matched keyword/regex or None.
+        Returns:
+            str or None: The matched keyword/regex or None if no match or on cooldown
         """
         if keyword_dict.get("notification_cooldown"):
             notification_cooldown = keyword_dict["notification_cooldown"]
         else:
             notification_cooldown = self.container_msg_cnf.get("notification_cooldown", 10)
         log_line = log_line.lower()
+        
         if "regex" in keyword_dict:
             regex = keyword_dict["regex"]
             if ignore_keyword_time or time.time() - self.time_per_keyword.get(regex, 0) >= int(notification_cooldown):
@@ -286,18 +319,22 @@ class LogProcessor:
     def _search_and_send(self, log_line):
         """
         Search for keywords/regex in log_line and collect the keyword settings of all found keywords. 
-        If a keyword is found, trigger notification and/or container action.
+        If a keyword is found, trigger notification and/or get attachment, container action, OliveTin action, etc.
         """
         keywords_found = []
         excluded_keywords = []
         keyword_msg_cnf = {"message": log_line, "unit_name": self.unit_name, "monitor_type": self.monitor_type.value}
         template_found = False
+        
+        # Search for configured keywords and collect their settings
         for keyword_dict in self.keywords:
             found = self._search_keyword(log_line, keyword_dict)
             if found:
+                # Apply template if one is configured (only first template is used)
                 if template_found is False and keyword_dict.get("template") or keyword_dict.get("json_template"):
                     template_found = True
                     keyword_msg_cnf["message"] = message_from_template(keyword_dict, log_line)
+                # Merge keyword configuration into message config
                 for key, value in keyword_dict.items():
                     if key == "excluded_keywords" and isinstance(value, list):
                         excluded_keywords.extend(value)
@@ -307,9 +344,10 @@ class LogProcessor:
 
         if not keywords_found:
             return
+            
         # When an excluded keyword is found, the log line gets ignored and the function returns
-        if exc := excluded_keywords + (self.container_msg_cnf.get("excluded_keywords") or []):
-            for keyword in self._get_keywords(exc):
+        if ek := excluded_keywords + (self.container_msg_cnf.get("excluded_keywords") or []):
+            for keyword in self._get_keywords(ek):
                 found = self._search_keyword(log_line, keyword, ignore_keyword_time=True)
                 if found:
                     self.logger.debug(f"Keyword(s) '{keywords_found}' found in '{self.unit_name}' but ignored because excluded keyword '{found}' was found")
@@ -318,6 +356,8 @@ class LogProcessor:
         keyword_msg_cnf["keywords_found"] = keywords_found
         action_to_perform = keyword_msg_cnf.get("action")
         action_result = None
+        
+        # Perform container action if configured
         if action_to_perform is not None:
             cooldown = self.container_msg_cnf["action_cooldown"]
             if self.time_per_action.get(action_to_perform, 0) < time.time() - int(cooldown):
@@ -328,8 +368,10 @@ class LogProcessor:
                 last_action_time = time.strftime("%H:%M:%S", time.localtime(self.time_per_action.get(action_to_perform, 0)))
                 self.logger.info(f"{self.unit_name}: Not performing action: '{action_to_perform}'. Action is on cooldown. Action was last performed at {last_action_time}. Cooldown is {cooldown} seconds.")
 
-        msg_cnf = self.get_message_config(keyword_msg_cnf)
+        msg_cnf = self._get_message_config(keyword_msg_cnf)
         attachment = None
+        
+        # Create log file attachment if requested
         if msg_cnf["attach_logfile"]:
             if result := self._log_attachment(msg_cnf["attachment_lines"]):
                 attachment = {"content": result[0], "file_name": result[1]}
@@ -345,19 +387,18 @@ class LogProcessor:
         if disable_notifications:
             self.logger.debug(f"Not sending notification for {self.unit_name} because notifications are disabled.")
 
+        # Send notification if not disabled
         if not disable_notifications:
             title = get_notification_title(msg_cnf, action_result)
             self._send_message(title, msg_cnf["message"], msg_cnf, attachment=attachment)
 
+        # Trigger OliveTin action if configured
         if msg_cnf.get("olivetin_action_id"):
             title, message = perform_olivetin_action(self.config, msg_cnf, msg_cnf["olivetin_action_id"])
             if not disable_notifications:
                 self._send_message(title, message, msg_cnf)
 
     def _send_message(self, title, message, msg_cnf, attachment=None):
-        """
-        Format notification title and call send_notification(). Optionally attach log file.
-        """
         send_notification(self.config,
                         unit_name=self.unit_name,
                         title=title,
@@ -368,9 +409,10 @@ class LogProcessor:
                         hostname=self.hostname)
 
     def _log_attachment(self, number_attachment_lines):
+        """Create a log file attachment with the specified number of lines."""
         file_name = f"last_{number_attachment_lines}_lines_from_{self.unit_name}.log"
         try:
-            log_tail = self.tail_logs(lines=number_attachment_lines)
+            log_tail = self._tail_logs(lines=number_attachment_lines)
             if log_tail:
                 return log_tail, file_name
         except Exception as e:
@@ -379,29 +421,41 @@ class LogProcessor:
 
     def _container_action(self, action: str) -> Optional[str]:
         """
-        Perform the specified container action (stop, start or restart). Returns result as a string that can be used in notification title.
-        syntax is 'action' or 'action@container_name'
+        Perform the specified container action (stop, start or restart). 
+        
+        Args:
+            action: Action string with syntax 'action' or 'action@container_name'
+            
+        Returns:
+            str or None: Result message that can be used in notification title
         """
         result = self.monitor_instance.container_action(self.monitor_type, self.unit_name, action)
         return result
 
-    def tail_logs(self, lines=100):
-        """
-        Tail logs from the container. Calls the tail_logs method of the monitor instance.
-        """
+    def _tail_logs(self, lines=100):
+        """Tail logs from the container. Calls the tail_logs method of the monitor instance."""
         return self.monitor_instance.tail_logs(unit_name=self.unit_name, 
                                                 monitor_type=self.monitor_type, 
                                                 lines=lines)
 
+
 def get_notification_title(message_config: dict, action_result: Optional[str] = None):
     """
-    Generate a notification title based on the template in the message config.
+    Generate a notification title.
+    
+    Args:
+        message_config: Message configuration dictionary
+        action_result: Optional result message from container action
+        
+    Returns:
+        str: Formatted notification title
     """
     title = ""
     keywords_found = message_config.get("keywords_found", "")
     notification_title_config = message_config.get("notification_title", "default")
     unit_name = message_config.get("unit_name", "") 
 
+    # Use custom title template if configured
     if notification_title_config.strip().lower() != "default":
         template = ""
         try:
@@ -418,6 +472,7 @@ def get_notification_title(message_config: dict, action_result: Optional[str] = 
         except Exception as e:
             logging.error(f"Error trying to apply this template for the notification title: {template} {e}")
 
+    # Generate default title if no template or template failed
     if not title and isinstance(keywords_found, list):
         if len(keywords_found) == 1:
             keyword = keywords_found[0]
@@ -429,9 +484,11 @@ def get_notification_title(message_config: dict, action_result: Optional[str] = 
             joined_keywords = ', '.join(f"'{word}'" for word in keywords_found)
             title = f"The following keywords were found in {unit_name}: {joined_keywords}"
 
+    # Append action result if available
     if action_result is not None:
         title = f"{title} ({action_result})"
 
+    # Fallback title
     if not title:
         title = f"{unit_name}: {keywords_found}"
 

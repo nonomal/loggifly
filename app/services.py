@@ -6,16 +6,26 @@ from pydantic import SecretStr
 
 logger = logging.getLogger(__name__)
 
+
 class OlivetinAction:
     """
     Trigger action via Olivetin API.
     First authenticates with username/password to get a session cookie if username and password are provided.
     Then can use that cookie for subsequent action requests.
     """
+    
     def __init__(self):
+        """Initialize OliveTin action handler with empty authentication cache."""
         self.auth_cookies = {}
 
     def get_auth_cookie(self, url, username, password) -> str | None:
+        """
+        Authenticate with OliveTin and get a session cookie.
+        Checks if existing cookie is still valid before creating a new one.
+
+        Returns:
+            str or None: Session cookie if authentication successful, None otherwise
+        """
         if (auth_cookie := self.auth_cookies.get(url)):
             if self.is_cookie_valid(url, auth_cookie):
                 return auth_cookie
@@ -47,6 +57,7 @@ class OlivetinAction:
             return None
 
     def is_cookie_valid(self, url, auth_cookie) -> bool:
+        """Check if an existing authentication cookie is still valid."""
         try:
             response = requests.get(
                 url=f"{url}/api/WhoAmI",
@@ -62,6 +73,7 @@ class OlivetinAction:
             return False
         
     def trigger_action(self, url, action_id, username=None, password=None) -> dict | None:
+        """Trigger an OliveTin action with optional authentication."""
         auth_cookie = None
         if username and password:
             auth_cookie = self.get_auth_cookie(url, username, password)
@@ -89,15 +101,26 @@ class OlivetinAction:
             logger.error(f"Error connecting to Olivetin: {e}")
             return None
 
+
+# Global instance and thread lock for singleton pattern
 _olivetin_action = None
 _lock = threading.Lock()
 
-def perform_olivetin_action(config: GlobalConfig, message_config, action_id) -> tuple[str, str]:
+
+def perform_olivetin_action(config: GlobalConfig, message_config: dict, action_id: str) -> tuple[str, str]:
+    """
+    Perform an OliveTin action.
+
+    Returns:
+        tuple: (notification_title, notification_message) describing the action result
+    """
+    # Get configuration with precedence: message_config > global_config
     url = message_config.get("olivetin_url", "").strip() or config.settings.olivetin_url or None
     username = message_config.get("olivetin_username", "").strip() or config.settings.olivetin_username or None
     password = message_config.get("olivetin_password", "").strip() or config.settings.olivetin_password or None
     if password and isinstance(password, SecretStr):
         password = password.get_secret_value()
+        
     global _olivetin_action, _lock
     with _lock:
         if _olivetin_action is None:
@@ -105,10 +128,13 @@ def perform_olivetin_action(config: GlobalConfig, message_config, action_id) -> 
         response = _olivetin_action.trigger_action(url, action_id, username, password)
         if not response:
             return "Olivetin Action Failed", "Olivetin Action failed with no response"
+            
+        # Parse response and determine success/failure
         log_entry = response.get("logEntry", {})
         action_title = log_entry.get("actionTitle", "unknown action")
         action_icon = log_entry.get("actionIcon", "")
         message = "Output:\n" + log_entry.get("output", "")
+        
         if (log_entry.get("executionStarted") is True 
         and log_entry.get("executionFinished") is True 
         and log_entry.get("blocked") is False):

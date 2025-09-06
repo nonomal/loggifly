@@ -1,15 +1,25 @@
 import re
 from enum import Enum
 
+
 class MonitorType(Enum):
+    """Types of monitoring targets supported by LoggiFly."""
     CONTAINER = "container"
     SWARM = "swarm"
+
+
 class MonitorDecision(Enum):
+    """Decisions for whether to monitor a container based on labels and configuration."""
     MONITOR = "monitor"
     SKIP = "skip"
     UNKNOWN = "unknown"
 
+
 # Log Pattern Constants
+# These patterns are used to detect the start of new log entries in multi-line mode.
+# When a pattern is detected, it indicates the beginning of a new log entry,
+# allowing proper grouping of multi-line log entries.
+
 # Strict patterns are more reliable and have higher priority during pattern detection
 STRICT_PATTERNS = [
     # Timestamp and log level at line start
@@ -54,11 +64,13 @@ FLEX_PATTERNS = [
     r"(?i)\d{2}/\d{2}/\d{4},\s+\d{1,2}:\d{2}:\d{2}\s+(?:AM|PM)",
 ]
 
-# Pre-compile patterns for better performance
+# Pre-compile patterns for better performance during log processing
 COMPILED_STRICT_PATTERNS = [re.compile(pattern, re.ASCII) for pattern in STRICT_PATTERNS]
 COMPILED_FLEX_PATTERNS = [re.compile(pattern, re.ASCII) for pattern in FLEX_PATTERNS]
 
+
 class Actions(Enum):
+    """Available container actions that can be triggered by keywords."""
     STOP = "stop"
     RESTART = "restart"
     START = "start"
