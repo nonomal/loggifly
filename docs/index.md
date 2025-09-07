@@ -28,9 +28,14 @@ features:
   - title: Notifications
     details: Send notifications directly to Ntfy or via Apprise to 100+ different services (Slack, Discord, Telegram) or even to your own custom endpoint.
     icon: 🚨
-  - title: Trigger Stop/Restart
-    details: Restart or stop containers automatically when critical keywords appear in the logs.
-    icon: 🔁
+  - title: Flexible Configuration
+    details: You can configure LoggiFly via a YAML file, environment variables or in the Docker labels of the container you want to monitor.
+    icon: 🔧
+  - title: Trigger Actions
+    details: You can trigger OliveTin actions or configure actions like restart or stop for your containers.
+    icon: 🎯
+    linkText: Learn More
+    link: /guide/actions
   - title: Log Attachments
     details: Automatically include a log file with your notification for better context.
     icon: 📁

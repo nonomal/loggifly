@@ -16,9 +16,9 @@ LoggiFly can also be used to get notifications from apps that don't have good no
 :::
 
 
-LoggiFly runs as a very lightweight container and connects directly to the Docker (or Podman) Socket. You can send alerts to ntfy or via Apprise to most other notification servives (like Discord, Slack, or Telegram). LoggiFly can also restart containers automatically, attach log files to your notifications, format messages by extracting only the relevant informstion and more.
+LoggiFly runs as a very lightweight container and connects directly to the Docker (or Podman) Socket. You can send alerts to ntfy or via Apprise to most other notification servives (like Discord, Slack, or Telegram). LoggiFly can also restart, start or stop containers automatically, trigger OliveTin actions via the OliveTin API, attach log files to your notifications, format messages by extracting only the relevant information and more.
 
-It supports both simple setups via environment variables and advanced configuration via a config.yaml file, giving you full control over alerts per container and even per keyword.
+You can configure LoggiFly via environment variables, a `config.yaml` file or in the Docker labels of the containers you want to monitor. Settings and keywords can be configured on three different levels: global, container and keyword.
 
 LoggiFly is easy to deploy, flexible, and made for people who want to monitor containers without extra complexity.
 

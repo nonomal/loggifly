@@ -10,15 +10,15 @@ import docker.errors
 from threading import Timer
 from docker.tls import TLSConfig
 from urllib.parse import urlparse
+import urllib.request
 from pydantic import ValidationError
 from typing import Any
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from load_config import load_config, format_pydantic_error
+from config.load_config import load_config, format_pydantic_error
 from docker_monitor import DockerLogMonitor
 from notifier import send_notification
-
 
 logging.basicConfig(
     level="INFO",
@@ -33,11 +33,25 @@ logging.getLogger("watchdog").setLevel(logging.WARNING)
 
 
 def create_handle_signal(monitor_instances, config, config_observer):
+    """
+    Create signal handler for graceful shutdown.
+    
+    Args:
+        monitor_instances: List of DockerLogMonitor instances to cleanup
+        config: Global configuration object
+        config_observer: File watcher observer for config changes
+        
+    Returns:
+        tuple: (signal_handler_function, global_shutdown_event)
+    """
     global_shutdown_event = threading.Event()   
 
     def handle_signal(signum, frame):
         if not config.settings.disable_shutdown_message:
-            send_notification(config, "LoggiFly", "LoggiFly", "Shutting down")
+            send_notification(config=config,
+                            unit_name= "LoggiFly",
+                            title="LoggiFly", 
+                            message="Shutting down")
         if config_observer is not None:
             config_observer.stop()
             config_observer.join()
@@ -52,14 +66,52 @@ def create_handle_signal(monitor_instances, config, config_observer):
         global_shutdown_event.set()
 
     return handle_signal, global_shutdown_event
-    
+
+
+def format_message(messages, alt_text):
+    """
+    Format multiple messages with separators.
+    """
+    message_line_break = "\n\n" + "-" * 60 + "\n\n"
+    message = message_line_break.join(messages) if messages else alt_text
+    message = "\n" + message
+    return message
+
+
+def ensure_config_template():
+    """
+    Download config template if it or config.yaml does not exist.
+    """
+    config_dir = "/config"
+    config_template = os.path.join(config_dir, "config_template.yaml")
+    config_file = os.path.join(config_dir, "config.yaml")
+    config_url = "https://raw.githubusercontent.com/clemcer/loggifly/refs/heads/main/docs/configs/config_template.yaml"
+
+    if os.path.isdir(config_dir):
+        if not os.path.isfile(config_template) and not os.path.isfile(config_file):
+            try:
+                logging.info("loading config.yaml template...")
+                urllib.request.urlretrieve(config_url, config_template)
+            except Exception as e:
+                logging.warning(f"Could not download config template from {config_url}: {e}")
+    else:
+        logging.debug("/config does not exist, skipping config template download.")
+
 
 class ConfigHandler(FileSystemEventHandler):
     """
     Handles config.yaml changes by reloading configuration and updating all DockerLogMonitor instances.
     Ensures new keywords, settings, or other changes are applied, especially for keyword searching in line_processor.py.
     """
+    
     def __init__(self, monitor_instances, config):
+        """
+        Initialize config change handler.
+        
+        Args:
+            monitor_instances: List of DockerLogMonitor instances to reload
+            config: Current global configuration
+        """
         self.monitor_instances = monitor_instances  
         self.last_config_reload_time = 0
         self.config = config
@@ -67,6 +119,9 @@ class ConfigHandler(FileSystemEventHandler):
         self.debounce_seconds = 2
 
     def on_modified(self, event):
+        """
+        Handle file modification events with debounced config reload.
+        """
         # Debounced reload of config.yaml if reload_config is enabled
         if self.config.settings.reload_config and not event.is_directory:
             if os.path.basename(event.src_path) == "config.yaml":
@@ -76,31 +131,62 @@ class ConfigHandler(FileSystemEventHandler):
                 self.reload_timer.start()
 
     def _trigger_reload(self):
+        """Execute the actual config reload after debounce period."""
+        logging.getLogger().setLevel(getattr(logging, self.config.settings.log_level.upper(), logging.INFO))
+        logging.info(f"Log-Level set to {self.config.settings.log_level}")
         logging.info("Config change detected, reloading config...")
         try:
             self.config, _ = load_config()
         except ValidationError as e:
             logging.critical(f"Error reloading config (using old config): {format_pydantic_error(e)}")
             return
+        messages = []
         for monitor in self.monitor_instances:
-            monitor.reload_config(self.config)
+            messages.append(monitor.reload_config(self.config))
+        message = format_message(messages, "LoggiFly is not monitoring anything.")
+
+        logging.info(f"Config reloaded successfully.\n{message}")
+        if self.config.settings.disable_config_reload_message is False:
+            send_notification(
+                config=self.config,
+                unit_name="LoggiFly",
+                title="LoggiFly: The config file was reloaded",
+                message=message
+            )
         # Reminder: The config watcher remains active even if reload_config is set to False after reload.
+
 
 def start_config_watcher(monitor_instances, config, path):
     """
-    Starts a watchdog observer to monitor config.yaml for changes and trigger reloads.
+    Start a watchdog observer to monitor config.yaml for changes and trigger reloads.
+    
+    Args:
+        monitor_instances: List of DockerLogMonitor instances
+        config: Global configuration object
+        path: Path to watch for config file changes
+        
+    Returns:
+        Observer: The watchdog observer instance
     """
     observer = Observer()
     observer.schedule(ConfigHandler(monitor_instances, config), path=path, recursive=False)
     observer.start()
     return observer
-    
+
 
 def check_monitor_status(docker_hosts, global_shutdown_event):
     """
-    Periodically checks Docker host connections and attempts reconnection if lost.
+    Periodically check Docker host connections and attempt reconnection if lost.
+    
+    Args:
+        docker_hosts: Dictionary of host configurations with monitor instances
+        global_shutdown_event: Event to signal global shutdown
+        
+    Returns:
+        Thread: The monitoring thread
     """
     def check_and_reconnect():
+        """Main monitoring loop for connection status."""
         while True:
             time.sleep(60)
             for host, values in docker_hosts.items():
@@ -131,11 +217,22 @@ def check_monitor_status(docker_hosts, global_shutdown_event):
 
 def create_docker_clients() -> dict[str, dict[str, Any]]:
     """
-    Creates Docker clients for all hosts specified in the DOCKER_HOST environment variable and the local Docker socket.
+    Create Docker clients for all hosts specified in the DOCKER_HOST environment variable and the local Docker socket.
     Searches for TLS certificates in '/certs/{ca,cert,key}.pem' or '/certs/{host}/{ca,cert,key}.pem'.
-    Returns a dictionary mapping host to client, TLS config, and label.
+    
+    Returns:
+        dict: Mapping of host to client, TLS config, and label information
     """
     def get_tls_config(hostname):
+        """
+        Search for TLS certificates for the given hostname.
+        
+        Args:
+            hostname: The hostname to find certificates for
+            
+        Returns:
+            TLSConfig or None: TLS configuration if certificates found
+        """
         cert_locations = [
             (os.path.join("/certs", hostname)),   
             (os.path.join("/certs"))             
@@ -152,6 +249,7 @@ def create_docker_clients() -> dict[str, dict[str, Any]]:
                 return TLSConfig(client_cert=(cert, key), ca_cert=ca, verify=True)
         return None
 
+    # Parse DOCKER_HOST environment variable
     docker_host = os.environ.get("DOCKER_HOST", "")
     logging.debug(f"Environment variable DOCKER_HOST: {os.environ.get('DOCKER_HOST', ' - Not configured - ')}")
     tmp_hosts = [h.strip() for h in docker_host.split(",") if h.strip()]
@@ -162,6 +260,7 @@ def create_docker_clients() -> dict[str, dict[str, Any]]:
             host, label = host.split("|", 1)
         hosts.append((host, label.strip()) if label else (host.strip(), None))
 
+    # Add local Docker socket if available
     if os.path.exists("/var/run/docker.sock"):
         logging.debug(f"Path to docker socket exists: True")
         if not any(h[0] == "unix:///var/run/docker.sock" for h in hosts):
@@ -172,7 +271,7 @@ def create_docker_clients() -> dict[str, dict[str, Any]]:
     if len(hosts) == 0:
         logging.critical("No docker hosts configured. Please set the DOCKER_HOST environment variable or mount your docker socket.")
 
-
+    # Create Docker clients for each host
     docker_hosts = {}
     for host, label in hosts:
         logging.info(f"Trying to connect to docker client on host: {host}")
@@ -215,21 +314,29 @@ def create_docker_clients() -> dict[str, dict[str, Any]]:
 
 def start_loggifly():
     """
-    Main entry point for LoggiFly. Loads config, sets up Docker clients, monitoring, config watcher, and signal handlers.
+    Main entry point for LoggiFly. 
+    
+    Loads config, sets up Docker clients, monitoring, config watcher, and signal handlers.
+    
+    Returns:
+        threading.Event: Global shutdown event that can be waited on
     """
+    ensure_config_template()
     try:
         config, path = load_config()
     except ValidationError as e:
         logging.critical(f"Error loading Config: {format_pydantic_error(e)}")
-        logging.info("Waiting 15s to prevent restart loop...")
-        time.sleep(15)
+        logging.info("Waiting 5s to prevent restart loop...")
+        time.sleep(5)
         sys.exit(1)
 
     logging.getLogger().setLevel(getattr(logging, config.settings.log_level.upper(), logging.INFO))
     logging.info(f"Log-Level set to {config.settings.log_level}")
-
+    start_messages = []
     docker_hosts = create_docker_clients()
     hostname = ""
+    
+    # Initialize monitoring for each Docker host
     for number, (host, values) in enumerate(docker_hosts.items(), start=1):
         client, label = values["client"], values["label"]
         if len(docker_hosts.keys()) > 1:
@@ -238,23 +345,34 @@ def start_loggifly():
             except Exception as e:
                 hostname = f"Host-{number}"
                 logging.warning(
-                    f"Could not get hostname for {host}. LoggiFly will call this host '{hostname}' in notifications and logging to differentiate it."
+                    f"Could not get hostname for {host}. LoggiFly will call this host '{hostname}' in notifications and logging to differentiate it from other hosts."
                     f"\nThis may occur if using a Socket Proxy without 'INFO=1', or you can set a label in DOCKER_HOST as 'tcp://host:2375|label'."
                     f"\nError details: {e}")    
                                 
         logging.info(f"Starting monitoring for {host} {'(' + hostname + ')' if hostname else ''}")
         monitor = DockerLogMonitor(config, hostname, host)
-        monitor.start(client)   
+        start_messages.append(monitor.start(client))
         docker_hosts[host]["monitor"] = monitor
 
     monitor_instances = [docker_hosts[host]["monitor"] for host in docker_hosts.keys()]
+    message = format_message(start_messages, "LoggiFly started without monitoring anything.")
+
+    logging.info(f"LoggiFly started.\n{message}")
+    if config.settings.disable_start_message is False:
+        send_notification(
+            config=config,
+            unit_name="LoggiFly",
+            title="LoggiFly started",
+            message=message
+        )
+    
     # Start config observer to catch config.yaml changes
     if config.settings.reload_config and isinstance(path, str) and os.path.exists(path):
         config_observer = start_config_watcher(monitor_instances, config, path)
     else:
-        logging.debug("Config watcher not started: reload_config is False or config path invalid.")
+        logging.debug("Config watcher did not start: reload_config is False or config path invalid.")
         config_observer = None
-
+    
     handle_signal, global_shutdown_event = create_handle_signal(monitor_instances, config, config_observer)
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)   
@@ -267,4 +385,3 @@ def start_loggifly():
 if __name__ == "__main__":
     global_shutdown_event = start_loggifly()
     global_shutdown_event.wait()
-    
