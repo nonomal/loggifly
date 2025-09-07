@@ -43,11 +43,12 @@ notifications:
 
 ::: details Webhook JSON Structure
 
-If a **webhook** is configured LoggiFly will post a JSON to the URL with the following data:
+If a **webhook** is configured LoggiFly will post a JSON to the URL with the following data. Note that the webhook feature might be expanded on and improved sometime in the future.
 
 ```yaml
 {
-  "container": "...",
+  "unit_name": "...",
+  "monitor_type": "...", # "container" or "swarm"
   "keywords": [...],
   "title": "...",
   "message": "...", 

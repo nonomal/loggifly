@@ -10,12 +10,13 @@ These are the default values:
 ```yaml
 settings:          
   log_level: INFO                         # DEBUG, INFO, WARNING, ERROR
-  multi_line_entries: True                # Monitor and catch multi-line log entries instead of going line by line
+  multi_line_entries: True                # Catch log entries that span multiple lines instead of going line by line.
   reload_config: True                     # Auto-reload config on changes
   disable_start_message: False            # Suppress startup notification
   disable_shutdown_message: False         # Suppress shutdown notification
   disable_config_reload_message: False    # Suppress config reload notification
   disable_container_event_message: False  # Suppress container start/stop notifications
+  disable_notifications: False            # Suppress notifications from log events (useful for action-only workflows)
 
   notification_cooldown: 5            # Seconds between alerts for same keyword (per container)
   notification_title: default         # Custom template for notification title
@@ -63,5 +64,6 @@ settings:
   excluded_keywords:
     - keyword1
     - regex: regex-pattern1
+    - keyword: keyword2
 ```
 

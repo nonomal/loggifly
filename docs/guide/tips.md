@@ -1,3 +1,8 @@
+---
+title: Tips
+---
+
+
 # 💡 Tips
 
 1. Ensure containers names **exactly match** your Docker **container names**. 

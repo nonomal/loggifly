@@ -4,18 +4,17 @@
 #
 # This is a template for your config.yaml file.
 #
+# Remove any sections you don't need.
+# After editing, rename this file to config.yaml to use it.
+#
 # For LoggiFly to work, you need to:
 #   - Configure at least ONE container
 #   - Add at least ONE keyword/regex (globally or per container)
 #
-# Optional: Remove any sections you don't need.
-# After editing, rename this file to config.yaml to use it.
-#
 # Each container example below shows more configuration options.
 #
-# Notification customization is not included here.
-#     For details, visit:
-#     https://clemcer.github.io/loggifly/guide/customize-notifications/
+# For more configuration options like OliveTin actions or notification customization, 
+# visit the docs: https://clemcer.github.io/loggifly
 #
 # ===========================================
 
@@ -28,6 +27,10 @@ containers:
       - keyword1                 # Simple keyword
       - regex: regex-pattern1    # Use this for regex patterns
       - keyword: keyword2        # Another way to set a simple keyword
+      - keyword_group:           # When all of these keywords are found in a log line, a notification is sent
+        - keyword3
+        - keyword4
+        - keyword5
 
   container3:
     keywords:
@@ -45,7 +48,6 @@ containers:
     ntfy_tags: closed_lock_with_key
     ntfy_priority: 5
     ntfy_topic: container3
-    webhook_url: https://custom.endpoint.com/post
     attachment_lines: 50
     notification_title: '{keywords} found in {container}'
     notification_cooldown: 2
@@ -91,16 +93,11 @@ notifications:
     tags: kite,mag                    # Ntfy tags/emojis
   apprise:
     url: "discord://webhook-url"      # Any Apprise-compatible URL
-  webhook:
-    url: https://custom.endpoint.com/post
-    headers:                          # Optional: Add custom headers
-      Authorization: "Bearer token"
-      X-Custom-Header": "Test123"
 
 #  Default settings (can be overridden on container or keyword level)
 settings:          
   log_level: INFO                        # DEBUG, INFO, WARNING, ERROR
-  multi_line_entries: True               # Monitor and catch multi-line log entries instead of going line by line. 
+  multi_line_entries: True               # Catch log entries that span multiple lines instead of going line by line.
   reload_config: True                     # Auto-reload config on changes
   disable_start_message: False            # Suppress startup notification
   disable_shutdown_message: False         # Suppress shutdown snotification
