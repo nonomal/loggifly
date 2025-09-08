@@ -5,7 +5,7 @@ export default defineConfig({
   title: "LoggiFly",
   description: "LoggiFly Documentation",
   head: [['link', { rel: 'icon', href: '/loggifly/icon.png' }]],
-  base: '/loggifly/',
+  base: '/LoggiFly/',
   cleanUrls: true,
   themeConfig: {
     // https://vitepress.dev/reference/default-theme-config
