@@ -72,7 +72,7 @@ class OlivetinAction:
             logger.error(f"You are not logged in to Olivetin: {e}")
             return False
         
-    def trigger_action(self, url, action_id, username=None, password=None) -> dict | None:
+    def trigger_action(self, url, action_id, arguments=None, username=None, password=None) -> dict | None:
         """Trigger an OliveTin action with optional authentication."""
         auth_cookie = None
         if username and password:
@@ -80,11 +80,17 @@ class OlivetinAction:
             if not auth_cookie:
                 logger.error("Username and password are set but could not get an auth cookie. Trying to trigger action without auth cookie...")
         try:
-            action_url = f"{url}/api/StartActionByGetAndWait/{action_id}"
+            olivetin_request_object = {
+                "actionId": action_id,
+            }
+            if arguments:
+                olivetin_request_object["arguments"] = arguments
+            action_url = f"{url}/api/StartActionAndWait"
             cookies = {"olivetin-sid-local": auth_cookie} if auth_cookie else None
-            action_response = requests.get(
+            action_response = requests.post(
                 url=action_url,
-                cookies=cookies
+                cookies=cookies,
+                json=olivetin_request_object
             )
             if action_response.status_code == 200:
                 logger.debug("Successfully established connection to Olivetin")
@@ -107,7 +113,7 @@ _olivetin_action = None
 _lock = threading.Lock()
 
 
-def perform_olivetin_action(config: GlobalConfig, message_config: dict, action_id: str) -> tuple[str, str]:
+def perform_olivetin_action(config: GlobalConfig, message_config: dict, config_dict: dict) -> tuple[str, str]:
     """
     Perform an OliveTin action.
 
@@ -120,12 +126,16 @@ def perform_olivetin_action(config: GlobalConfig, message_config: dict, action_i
     password = message_config.get("olivetin_password", "").strip() or config.settings.olivetin_password or None
     if password and isinstance(password, SecretStr):
         password = password.get_secret_value()
-        
+    action_id = config_dict.get("id")
+    if not action_id:
+        logger.error("No action ID provided")
+        return "Olivetin Action Failed", "Olivetin Action failed with no action ID"
+    arguments = config_dict.get("arguments")
     global _olivetin_action, _lock
     with _lock:
         if _olivetin_action is None:
             _olivetin_action = OlivetinAction()
-        response = _olivetin_action.trigger_action(url, action_id, username, password)
+        response = _olivetin_action.trigger_action(url, action_id, arguments, username, password)
         if not response:
             return "Olivetin Action Failed", "Olivetin Action failed with no response"
             

@@ -323,6 +323,7 @@ class LogProcessor:
         """
         keywords_found = []
         excluded_keywords = []
+        olivetin_configs = []
         keyword_msg_cnf = {"message": log_line, "unit_name": self.unit_name, "monitor_type": self.monitor_type.value}
         template_found = False
         
@@ -338,6 +339,8 @@ class LogProcessor:
                 for key, value in keyword_dict.items():
                     if key == "excluded_keywords" and isinstance(value, list):
                         excluded_keywords.extend(value)
+                    elif key == "olivetin_actions" and isinstance(value, list):
+                        olivetin_configs.extend(value)
                     elif not keyword_msg_cnf.get(key) and value is not None:
                         keyword_msg_cnf[key] = value
                 keywords_found.append(found)
@@ -393,10 +396,20 @@ class LogProcessor:
             self._send_message(title, msg_cnf["message"], msg_cnf, attachment=attachment)
 
         # Trigger OliveTin action if configured
-        if msg_cnf.get("olivetin_action_id"):
-            title, message = perform_olivetin_action(self.config, msg_cnf, msg_cnf["olivetin_action_id"])
-            if not disable_notifications:
-                self._send_message(title, message, msg_cnf)
+        for olivetin_config in olivetin_configs:
+            if not olivetin_config.get("id"):
+                continue
+            self.start_olivetin_action(msg_cnf, olivetin_config, disable_notifications)
+    
+    def start_olivetin_action(self, msg_cnf, olivetin_config, disable_notifications=False):
+        def trigger_action():
+            if result := perform_olivetin_action(self.config, msg_cnf, olivetin_config):
+                title, message = result
+                if not disable_notifications:
+                    self._send_message(title, message, msg_cnf)
+    
+        thread = Thread(target=trigger_action, daemon=True)
+        thread.start()
 
     def _send_message(self, title, message, msg_cnf, attachment=None):
         send_notification(self.config,

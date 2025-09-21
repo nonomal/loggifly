@@ -101,20 +101,63 @@ class ModularSettings(BaseConfigModel):
             return None
         return validate_action_cooldown(v)
 
+class OliveTinArgument(BaseConfigModel):
+    name: str
+    value: str
+
+class OliveTinAction(BaseConfigModel):
+    id: str
+    arguments: Optional[List[OliveTinArgument]] = None
+
+    @field_validator("arguments", mode="before")
+    def validate_olivetin_arguments(cls, v):
+        if not isinstance(v, list):
+            logging.warning("OliveTin Action: arguments must be a list. Ignoring.")
+            return None
+        filtered_args = []
+        for arg in v:
+            if not isinstance(arg, dict) or "name" not in arg or "value" not in arg:
+                logging.warning("OliveTin Action: arguments must have name and value. Ignoring.")
+                continue
+            for key, value in arg.items():
+                try:
+                    value = str(value)
+                except ValueError:
+                    logging.warning(f"OliveTin Action: arguments value must be a string. Ignoring. {key}: {value}")
+                    continue
+                arg[key] = value
+            filtered_args.append(arg)
+        return filtered_args
+
 
 class KeywordItemBase(ModularSettings):
     """Base class for keyword items with common fields for actions and templates."""
     json_template: Optional[str] = None
     action: Optional[str] = None
-    olivetin_action_id: Optional[str] = None
+    # olivetin_action_id: Optional[str] = None
+    olivetin_actions: Optional[List[OliveTinAction]] = None
 
     @field_validator("action")
     def validate_action(cls, v):
         """Validate action against available actions enum."""
         if v and not any(a.value == v.split('@')[0] for a in Actions):
             return None
-        return v
-
+        return v    
+    
+    @model_validator(mode="before")
+    def validate_olivetin(cls, data: dict) -> dict:
+        if "olivetin_actions" in data and isinstance(data["olivetin_actions"], list):
+            for action in data["olivetin_actions"]:
+                if not isinstance(action, dict) or "id" not in action:
+                    logging.warning("OliveTin Action: id must be a string. Ignoring.")
+                    continue
+                action["id"] = str(action["id"])
+        if data.get("olivetin_action_id"):
+            data.setdefault("olivetin_actions", []).append({
+                "id": data["olivetin_action_id"],
+            })
+            data.pop("olivetin_action_id")
+        return data
 
 class RegexItem(KeywordItemBase):
     """
