@@ -298,8 +298,12 @@ class NotificationsConfig(BaseConfigModel):
         return self
 
 
+class HostConfig(BaseConfigModel):
+    containers: dict[str, ContainerConfig] | None = None
+
 class GlobalConfig(BaseConfigModel):
     """Root configuration model for the application."""
+    hosts: dict[str, HostConfig] | None = None
     containers: dict[str, ContainerConfig] | None = None
     swarm_services: dict[str, SwarmServiceConfig] | None = None
     global_keywords: GlobalKeywords
@@ -309,17 +313,21 @@ class GlobalConfig(BaseConfigModel):
     @model_validator(mode="before")
     def transform_legacy_format(cls, values):
         """Migrate legacy list-based container definitions to dictionary format."""
-        # Convert list containers to dict format
-        for container_object in ["containers", "swarm_services", "systemd_services"]:
-            if isinstance(values.get(container_object), list):
-                values[container_object] = {name: {} for name in values[container_object]}
-            for container in values.get(container_object, {}):
-                if isinstance(values.get(container_object).get(container), list):
-                    values[container_object][container] = {
-                        "keywords": values[container_object][container],
+        to_convert = [
+            values.get("containers"), values.get("swarm_services"),
+            ] + [values["hosts"][host].get("containers") for host in values.get("hosts", {})]
+        for container_object in to_convert:
+            if container_object is None:
+                continue
+            if isinstance(container_object, list):
+                container_object = {name: {} for name in container_object}
+            for container in container_object:
+                if isinstance(container_object.get(container), list):
+                    container_object[container] = {
+                        "keywords": container_object[container],
                     }
-                elif values.get(container_object).get(container) is None:
-                    values[container_object][container] = {
+                elif container_object.get(container) is None:
+                    container_object[container] = {
                         "keywords": [],
                     }
         return values
@@ -327,11 +335,12 @@ class GlobalConfig(BaseConfigModel):
     @model_validator(mode="after")
     def check_at_least_one(self) -> "GlobalConfig":
         """Ensure at least one container or swarm service and at least one keyword is configured."""
-        if not self.containers and not self.swarm_services:
+        configs = [self.containers, self.swarm_services] + [h.containers for h in self.hosts.values() if h.containers] if self.hosts else []
+        if not any(configs):
             raise ValueError("You have to configure at least one container")
         all_keywords = copy.deepcopy(self.global_keywords.keywords)
         if not all_keywords:
-            for config in [self.containers, self.swarm_services]:
+            for config in configs:
                 if config:
                     for c in config.values():
                         all_keywords.extend(c.keywords)

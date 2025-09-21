@@ -13,7 +13,7 @@ import docker.errors
 from datetime import datetime
 from notifier import send_notification
 from line_processor import LogProcessor
-from config.config_model import GlobalConfig
+from config.config_model import GlobalConfig, HostConfig
 from config.load_config import validate_unit_config, get_pretty_yaml_config
 from constants import (
     Actions,
@@ -133,6 +133,7 @@ class DockerLogMonitor:
         self.hostname = hostname  # empty string if only one client is being monitored, otherwise the hostname of the client do differentiate between the hosts
         self.host = host
         self.config = config
+        self.containers_config = self._get_host_containers_config()
         self.swarm_mode = os.getenv("LOGGIFLY_MODE", "").strip().lower() == "swarm"
         self._registry = MonitoredContainerRegistry()
         self.registry_lock = threading.Lock()
@@ -164,6 +165,17 @@ class DockerLogMonitor:
         with self.threads_lock:
             self.threads.append(thread)
 
+    def _get_host_containers_config(self):
+        if not self.config.hosts or not self.config.hosts.get(self.hostname):
+            containers_config = self.config.containers or {}
+        else:
+            containers_config = self.config.hosts[self.hostname].containers or {}
+            if self.config.containers:
+                for container_name, container_config in self.config.containers.items():
+                    if container_name not in containers_config:
+                        containers_config[container_name] = container_config
+        return containers_config
+
     def _get_selected_containers(self):
         """
         Build lists of containers and swarm services to monitor based on config.
@@ -171,10 +183,11 @@ class DockerLogMonitor:
         """
         self.selected_containers = []
         self.selected_swarm_services = []
-        for (config, selected, type_placeholder) in [
-            (self.config.containers, self.selected_containers, "Container"),
-            (self.config.swarm_services, self.selected_swarm_services, "Swarm Service")
-        ]:
+        configs_to_check = [
+            (self.containers_config, self.selected_containers, "Container"),
+            (self.config.swarm_services, self.selected_swarm_services, "Swarm Service"),
+        ]
+        for (config, selected, type_placeholder) in configs_to_check:
             if not config:
                 continue
             for object_name in config:
@@ -226,7 +239,7 @@ class DockerLogMonitor:
             return None
         # Check if the container is configured via normal configuration
         elif decision == MonitorDecision.UNKNOWN and container.name in self.selected_containers and self.config.containers:
-            return ContainerConfig(MonitorType.CONTAINER, cname, cname, self.config.containers[cname], cname, cid)
+            return ContainerConfig(MonitorType.CONTAINER, cname, cname, self.containers_config[cname], cname, cid)
         return None
 
     def _maybe_monitor_container(self, container, skip_labels=False) -> bool:
@@ -354,6 +367,8 @@ class DockerLogMonitor:
         Returns a summary message to app.py.
         """
         self.config = config if config is not None else self.config
+        self.containers_config = self._get_host_containers_config()
+        self.host_config = self.config.hosts.get(self.hostname) if self.config.hosts and self.hostname else None
         self.log_level = self.config.settings.log_level.upper()
         self.logger.setLevel(getattr(logging, self.log_level, logging.INFO))
         self._get_selected_containers()  
@@ -366,7 +381,7 @@ class DockerLogMonitor:
                 if ctx.config_via_labels:
                     continue
                 if ctx.monitor_type == MonitorType.CONTAINER:
-                    ctx.unit_config = self.config.containers.get(ctx.config_key) if self.config.containers else None
+                    ctx.unit_config = self.containers_config.get(ctx.config_key) if self.containers_config else None
                     ctx.processor.load_config_variables(self.config, ctx.unit_config)
                     if ctx.config_key not in self.selected_containers and not ctx.monitoring_stopped_event.is_set():
                         self.logger.debug(f"Container {ctx.config_key} is not in the config. Stopping monitoring.")
