@@ -41,6 +41,7 @@ class Settings(BaseConfigModel):
     disable_shutdown_message: bool = False
     disable_config_reload_message: bool = False
     disable_container_event_message: bool = False
+    compact_summary_message: bool = False
     reload_config: bool = True
 
     # modular settings:

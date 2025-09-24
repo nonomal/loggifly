@@ -406,19 +406,21 @@ class DockerLogMonitor:
     def _start_message(self) -> str:
         """Compose a summary message about monitored containers and services."""
         messages = []
+        separator = ", " if self.config.settings.compact_summary_message else "\n - "
+        prefix = ": " if self.config.settings.compact_summary_message else ":\n - "
         monitored_container_names = [c.unit_name for c in self._registry.get_actively_monitored(monitor_type=MonitorType.CONTAINER)]
         unmonitored_containers = [c for c in self.selected_containers if c not in monitored_container_names]
         if monitored_container_names:
-            messages.append("These containers are being monitored:\n - " + "\n - ".join(monitored_container_names))
+            messages.append("These containers are being monitored" + prefix + separator.join(monitored_container_names))
         if unmonitored_containers:
-            messages.append("These selected containers are not running:\n - " + "\n - ".join(unmonitored_containers))
+            messages.append("These selected containers are not running" + prefix + separator.join(unmonitored_containers))
         actively_monitored_swarm = [context for context in self._registry.get_actively_monitored(monitor_type=MonitorType.SWARM)]
         unmonitored_swarm_services = [s for s in self.selected_swarm_services if s not in [s.config_key for s in actively_monitored_swarm]]
         monitored_swarm_service_units = [s.unit_name for s in actively_monitored_swarm]
         if monitored_swarm_service_units:
-            messages.append("These Swarm Containers are being monitored:\n - " + "\n - ".join(monitored_swarm_service_units))
+            messages.append("These Swarm Containers are being monitored" + prefix + separator.join(monitored_swarm_service_units))
         if unmonitored_swarm_services:
-            messages.append("These Swarm Services are not running:\n - " + "\n - ".join(unmonitored_swarm_services))
+            messages.append("These Swarm Services are not running" + prefix + separator.join(unmonitored_swarm_services))
         message = "\n\n".join(messages)
         if self.hostname:
             message = f"[{self.hostname}]\n" + message
