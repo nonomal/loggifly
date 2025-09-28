@@ -17,6 +17,7 @@ settings:
   disable_config_reload_message: False    # Suppress config reload notification
   disable_container_event_message: False  # Suppress container start/stop notifications
   disable_notifications: False            # Suppress notifications from log events (useful for action-only workflows)
+  compact_summary_message: False          # comma-separated list of containers in startup and config reload notifications
 
   notification_cooldown: 5            # Seconds between alerts for same keyword (per container)
   notification_title: default         # Custom template for notification title

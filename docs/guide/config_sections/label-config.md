@@ -48,17 +48,26 @@ services:
       # comma-separated lists for keywords and excluded keywords
       loggifly.keywords: "keyword1,keyword2,keyword3"
       loggifly.excluded_keywords: "keyword4,keyword5,keyword6"
-```
+  ```
 
-::: info
-You can also set these labels for Swarm Services in the compose file. Just put them under the `deploy` section.
+
+## Using Labels with Swarm Services
+
+While you can set labels under the `deploy` section in the compose file of your Swarm Service, it is recommended to set them directly in the `labels` section of the container since LoggiFly can not read Swarm Service Labels when running on a worker node.
 
 ```yaml
 services:
   webserver:
     image: nginx
+
+    # With these labels LoggiFly would only monitor containers
+    # of the nginx service that are running on manager nodes
     deploy:
       labels:
-        ...
+        loggifly.monitor: "true" 
+
+    # With these labels LoggiFly would monitor all containers 
+    # of the nginx service, both on manager and worker nodes
+    labels:
+      loggifly.monitor: "true"  
 ```
-:::

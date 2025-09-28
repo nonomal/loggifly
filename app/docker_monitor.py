@@ -783,8 +783,6 @@ def get_service_info(container, client) -> tuple[str, str, dict] | None:
         service_labels = service.attrs["Spec"]["Labels"]
         return service_name, stack_name, service_labels
     except Exception as e:
-       # logging.debug(f"Could not get Swarm service info for container {container.name}."
-       # + f"This container is probably running on a worker node. Falling back to container labels. Error message: {e}")
         return service_name, stack_name, {}
 
 

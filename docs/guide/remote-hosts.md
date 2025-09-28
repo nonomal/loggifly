@@ -17,6 +17,7 @@ When the connection to a docker host is lost, LoggiFly will try to reconnect eve
 When multiple hosts are set LoggiFly will use **labels** to differentiate between them both in notifications and in logging.<br>
 You can set a **label** by appending it to the address with `"|"` ([_see example_](#remote-hosts-example)).<br>
 When no label is set LoggiFly will use the **hostname** retrieved via the docker daemon. If that fails, usually because `INFO=1` has to be set when using a proxy, the labels will just be `Host-{Nr}`.<br>
+Note that labels and hostnames are only being used when there are more thatn two hosts being monitored.
 
 ::: tip
 If you want to set a label to your _mounted docker socket_ you can do so by adding `unix:///var/run/docker.sock|label` in the `DOCKER_HOST` environment variable (_the socket still has to be mounted_) or just set the address of a [socket proxy](#socket-proxy) with a label.
@@ -24,10 +25,39 @@ If you want to set a label to your _mounted docker socket_ you can do so by addi
 
 ### Assign Containers to Hosts
 
-You can assign containers to specific hosts by providing a comma-separated list of labels/hostnames under the `hosts` field in the container configuration. The [labels](#labels) section shows how the hostname is constructed.<br> 
+You can easily configure your containers in the `config.yaml` file under `hosts.\<your-hostname>`.
+The [labels](#labels) section above shows how the hostname is constructed.
+
+```yaml
+hosts:
+  foo:
+    containers:
+      container1:
+        keywords:
+          - error
+  bar:
+    containers:
+      container2:
+        keywords:
+          - critical
+containers:
+  container3:
+    keywords:
+      - timeout
+```
+
+In the above example `container1` will only be monitored on host `foo` and `container2` will only be monitored on host `bar`. `container3` will be monitored on all hosts.
+
+::: info
+When a container is configured globally and on a specific host, the per-host configuration takes precedence.
+:::
+
+
+
+Another way to assign containers to specific hosts is by providing a comma-separated list of labels/hostnames in the `hosts` field of the container configuration.<br> 
 When no hosts are set LoggiFly will look for the container on _all_ configured remote hosts.
 
-Here is a short yaml snippet showing how to assign a container to a specific host:
+Here is a short yaml snippet:
 
   
 ```yaml 

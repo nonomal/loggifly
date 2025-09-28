@@ -21,7 +21,6 @@ class OlivetinAction:
         self._locks_lock = threading.Lock()
 
     def _get_url_lock(self, url: str) -> threading.Lock:
-        # create per-url lock safely
         with self._locks_lock:
             lock = self._locks.get(url)
             if lock is None:

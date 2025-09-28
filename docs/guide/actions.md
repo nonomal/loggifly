@@ -44,15 +44,18 @@ containers:
 
 ## Trigger OliveTin Actions
 
+
 [OliveTin](https://github.com/OliveTin/OliveTin) is a great tool that allows you to perform predefined commands from a web interface. Fortunately for us it also has a API that we can use to trigger actions when LoggiFly finds certain keywords in the logs.
+
+LoggiFly will send the execution output of the action in a separate notification.
 
 You can configure your OliveTin URL globally in the `settings` section or per `container` and even per `keyword`/`regex` in case you want to trigger commands on different OliveTin instances.
 
-If you have configured a [Local User Login](https://docs.olivetin.app/security/local.html) you can use the `username` and `password` to trigger actions that require authentication.
+If you have configured a [Local User Login](https://docs.olivetin.app/security/local.html) you can configure `username` and `password` to trigger actions that require authentication (also in `settings`, per `container` and per `keyword`/`regex`).
 
-Then you can configure the [`olivetin_action_id`](https://docs.olivetin.app/action_customization/ids.html) per keyword or regex.
+### Configuring one simple action
 
-The execution output of the action is sent in a separate notification.
+Simply configure the [`olivetin_action_id`](https://docs.olivetin.app/action_customization/ids.html) per keyword or regex.
 
 Here is a an example config snippet:
 
@@ -67,5 +70,29 @@ settings:
   olivetin_url: http://192.168.178.20:1337
   olivetin_username: admin
   olivetin_password: password
+
+```
+
+### Configuring multiple actions with Arguments
+
+You can configure multiple actions and pass arguments by using the `olivetin_actions` field.
+
+```yaml
+containers:
+  container3:
+    - keyword: critical
+      olivetin_actions:
+        - id: some-action-id
+          arguments:
+            - name: arg1
+              value: value1
+            - name: arg2
+              value: value2
+        - id: some-other-action-id
+          arguments:
+            - name: arg3
+              value: value3
+            - name: arg4
+              value: value4
 
 ```

@@ -43,6 +43,7 @@ This table shows which settings are available and where they can be configured:<
 | `disable_shutdown_message`      | ✅                   | –                             | –                      | Disable shutdown notification |
 | `disable_config_reload_message` | ✅                   | –                             | –                      | Disable notification when config is reloaded |
 | `disable_container_event_message`| ✅                  | –                             | –                      | Disable notification when container monitoring starts/stops |
+| `compact_summary_message`       | ✅                   | –                             | –                      | Formats the summary message in startup and config reload notifications with a comma-separated list of containers instead of a multi-line list|
 | [`hosts`](./remote-hosts#assign-containers-to-hosts) | –     | ✅      | –             | Name of the host a container should be monitored on if monitoring multiple hosts |
 | `disable_notifications`         | ✅                   | ✅                             | ✅                      | Disable notifications when keywords are found. Useful when you only want to trigger actions. |
 | [`excluded_keywords`](./config_sections/settings#excluded-keywords) | ✅  | ✅  | ✅    | Log lines with these keywords will always be ignored | 
