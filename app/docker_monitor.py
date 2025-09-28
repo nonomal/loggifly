@@ -203,18 +203,25 @@ class DockerLogMonitor:
         """Determine if a container should be monitored based on configuration and labels."""
         cname = container.name
         cid = container.id
+        container_labels = container.labels or {}
 
         # Check if the container is a swarm service
         if service_info := get_service_info(container, self.client):
-            service_name, stack_name, service_labels = service_info
-            unit_name = get_service_unit_name(container.labels) or container.name
-            decision = check_monitor_label(service_labels) if not skip_labels else MonitorDecision.UNKNOWN
+            service_name, stack_name, labels = service_info
+            label_source = "swarm service labels"
+            unit_name = get_service_unit_name(container_labels) or container.name
+            decision = check_monitor_label(labels) if not skip_labels else MonitorDecision.UNKNOWN
+            # If the decision is unknown, check the container labels as fallback. Service Labels can only be read on manager nodes.
+            if not skip_labels and decision == MonitorDecision.UNKNOWN:
+                labels, label_source = container_labels, "container labels"
+                decision = check_monitor_label(labels) if not skip_labels else MonitorDecision.UNKNOWN
+         
             if decision == MonitorDecision.MONITOR:
-                unit_config = validate_unit_config(MonitorType.SWARM, parse_label_config(service_labels))
+                unit_config = validate_unit_config(MonitorType.SWARM, parse_label_config(labels))
                 if unit_config is None:
-                    self.logger.error(f"Could not validate swarm service config for '{service_name}' from labels. Skipping.\nLabels: {service_labels}")
+                    self.logger.error(f"Could not validate swarm service config for '{service_name}' from {label_source}.\nLabels: {labels}")
                     return None
-                self.logger.info(f"Validated swarm service config for '{unit_name}' from labels:\n{get_pretty_yaml_config(unit_config, top_level_key=service_name)}")
+                self.logger.info(f"Validated swarm service config for '{unit_name}' from {label_source}:\n{get_pretty_yaml_config(unit_config, top_level_key=service_name)}")
                 return ContainerConfig(MonitorType.SWARM, service_name, unit_name, unit_config, cname, cid, config_via_labels=True)
             elif decision == MonitorDecision.SKIP:
                 return None
@@ -226,12 +233,11 @@ class DockerLogMonitor:
                     return ContainerConfig(MonitorType.SWARM, stack_name, unit_name, self.config.swarm_services[stack_name], cname, cid)
         
         # Check if the container is configured via labels
-        labels = container.labels or {}
-        decision = check_monitor_label(labels) if not skip_labels else MonitorDecision.UNKNOWN
+        decision = check_monitor_label(container_labels) if not skip_labels else MonitorDecision.UNKNOWN
         if decision == MonitorDecision.MONITOR:
-            unit_config = validate_unit_config(MonitorType.CONTAINER, parse_label_config(labels))
+            unit_config = validate_unit_config(MonitorType.CONTAINER, parse_label_config(container_labels))
             if unit_config is None:
-                self.logger.error(f"Could not validate container config for '{container.name}' from labels. Skipping.\nLabels: {labels}")
+                self.logger.error(f"Could not validate container config for '{container.name}' from labels. Skipping.\nLabels: {container_labels}")
                 return None
             self.logger.info(f"Validated container config for '{container.name}' from labels:\n{get_pretty_yaml_config(unit_config, top_level_key=container.name)}")
             return ContainerConfig(MonitorType.CONTAINER, cname, cname, unit_config, cname, cid, config_via_labels=True)
@@ -762,23 +768,24 @@ def check_monitor_label(labels) -> MonitorDecision:
         return MonitorDecision.MONITOR
     elif monitor_value == "false":
         return MonitorDecision.SKIP
-        
     return MonitorDecision.UNKNOWN
 
 
 def get_service_info(container, client) -> tuple[str, str, dict] | None:
     """Get Docker Swarm service information from a container."""
-    if not (service_id := container.labels.get("com.docker.swarm.service.id")):
+    container_labels = container.labels
+    if not container_labels or not container_labels.get("com.docker.swarm.service.id"):
         return None
+    service_name = container_labels.get("com.docker.swarm.service.name", "")
+    stack_name = container_labels.get("com.docker.stack.namespace", "")
     try:
-        service = client.services.get(service_id)
-        service_name = service.attrs["Spec"]["Name"]
-        stack_name = service.attrs["Spec"]["Labels"].get("com.docker.stack.namespace", "")
+        service = client.services.get(container_labels.get("com.docker.swarm.service.id", ""))
         service_labels = service.attrs["Spec"]["Labels"]
         return service_name, stack_name, service_labels
     except Exception as e:
-        logging.error(f"Error getting service info for container {container.name}: {e}")
-        return None
+       # logging.debug(f"Could not get Swarm service info for container {container.name}."
+       # + f"This container is probably running on a worker node. Falling back to container labels. Error message: {e}")
+        return service_name, stack_name, {}
 
 
 def get_service_unit_name(labels) -> str | None:

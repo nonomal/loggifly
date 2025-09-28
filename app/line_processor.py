@@ -399,9 +399,9 @@ class LogProcessor:
         for olivetin_config in olivetin_configs:
             if not olivetin_config.get("id"):
                 continue
-            self.start_olivetin_action(msg_cnf, olivetin_config, disable_notifications)
+            self._start_olivetin_action(msg_cnf, olivetin_config, disable_notifications)
     
-    def start_olivetin_action(self, msg_cnf, olivetin_config, disable_notifications=False):
+    def _start_olivetin_action(self, msg_cnf, olivetin_config, disable_notifications=False):
         def trigger_action():
             if result := perform_olivetin_action(self.config, msg_cnf, olivetin_config):
                 title, message = result
