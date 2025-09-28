@@ -25,7 +25,7 @@ If you want to set a label to your _mounted docker socket_ you can do so by addi
 
 ### Assign Containers to Hosts
 
-You can easily configure your containers in the `config.yaml` file under `hosts.\<your-hostname>`.
+You can easily configure your containers in the `config.yaml` file under `hosts.<your-hostname>`.
 The [labels](#labels) section above shows how the hostname is constructed.
 
 ```yaml
