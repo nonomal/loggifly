@@ -338,7 +338,7 @@ class GlobalConfig(BaseConfigModel):
         """Ensure at least one container or swarm service and at least one keyword is configured."""
         configs = [self.containers, self.swarm_services] + [h.containers for h in self.hosts.values() if h.containers] if self.hosts else []
         if not any(configs):
-            raise ValueError("You have to configure at least one container")
+            logging.warning("You haven't configured any containers or swarm services via a config file or environment variables. Ignore this warning if you are using Docker labels to configure everything.")
         all_keywords = copy.deepcopy(self.global_keywords.keywords)
         if not all_keywords:
             for config in configs:
@@ -348,7 +348,7 @@ class GlobalConfig(BaseConfigModel):
                 if all_keywords:
                     break
         if not all_keywords:
-            raise ValueError("No keywords configured. You have to set keywords either per container or globally.")
+            logging.warning("No keywords configured via a config file or environment variables. Ignore this warning if you are using Docker labels to configure everything.")
         return self
 
 
