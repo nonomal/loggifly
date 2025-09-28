@@ -17,6 +17,17 @@ class OlivetinAction:
     def __init__(self):
         """Initialize OliveTin action handler with empty authentication cache."""
         self.auth_cookies = {}
+        self._locks: dict[str, threading.Lock] = {}
+        self._locks_lock = threading.Lock()
+
+    def _get_url_lock(self, url: str) -> threading.Lock:
+        # create per-url lock safely
+        with self._locks_lock:
+            lock = self._locks.get(url)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[url] = lock
+            return lock
 
     def get_auth_cookie(self, url, username, password) -> str | None:
         """
@@ -26,35 +37,36 @@ class OlivetinAction:
         Returns:
             str or None: Session cookie if authentication successful, None otherwise
         """
-        if (auth_cookie := self.auth_cookies.get(url)):
-            if self.is_cookie_valid(url, auth_cookie):
+        with self._get_url_lock(url):
+            if (auth_cookie := self.auth_cookies.get(url)):
+                if self.is_cookie_valid(url, auth_cookie):
+                    return auth_cookie
+                else:
+                    self.auth_cookies.pop(url)
+            try:
+                login_url = f"{url}/api/LocalUserLogin"
+                login_response = requests.post(
+                    url=login_url,
+                    headers={"accept": "application/json", "Content-Type": "application/json"},
+                    json={"username": username, "password": password}
+                )
+                
+                if login_response.status_code != 200:
+                    logger.error(f"Olivetin login failed: {login_response.status_code} - {login_response.text}")
+                    return None
+                
+                # Get the auth cookie
+                auth_cookie = login_response.cookies.get("olivetin-sid-local")
+                if not auth_cookie:
+                    logger.error("Tried to login to Olivetin but did not receive an auth cookie")
+                    logger.error(f"Login Response: {login_response.text}")
+                    return None
+                logger.info("Olivetin login successful")
+                self.auth_cookies[url] = auth_cookie
                 return auth_cookie
-            else:
-                self.auth_cookies.pop(url)
-        try:
-            login_url = f"{url}/api/LocalUserLogin"
-            login_response = requests.post(
-                url=login_url,
-                headers={"accept": "application/json", "Content-Type": "application/json"},
-                json={"username": username, "password": password}
-            )
-            
-            if login_response.status_code != 200:
-                logger.error(f"Olivetin login failed: {login_response.status_code} - {login_response.text}")
+            except Exception as e:
+                logger.error(f"Error getting auth cookie: {e}")
                 return None
-            
-            # Get the auth cookie
-            auth_cookie = login_response.cookies.get("olivetin-sid-local")
-            if not auth_cookie:
-                logger.error("Tried to login to Olivetin but did not receive an auth cookie")
-                logger.error(f"Login Response: {login_response.text}")
-                return None
-            logger.info("Olivetin login successful")
-            self.auth_cookies[url] = auth_cookie
-            return auth_cookie
-        except Exception as e:
-            logger.error(f"Error getting auth cookie: {e}")
-            return None
 
     def is_cookie_valid(self, url, auth_cookie) -> bool:
         """Check if an existing authentication cookie is still valid."""
@@ -110,7 +122,6 @@ class OlivetinAction:
 
 # Global instance and thread lock for singleton pattern
 _olivetin_action = None
-_lock = threading.Lock()
 
 
 def perform_olivetin_action(config: GlobalConfig, message_config: dict, config_dict: dict) -> tuple[str, str]:
@@ -131,27 +142,27 @@ def perform_olivetin_action(config: GlobalConfig, message_config: dict, config_d
         logger.error("No action ID provided")
         return "Olivetin Action Failed", "Olivetin Action failed with no action ID"
     arguments = config_dict.get("arguments")
-    global _olivetin_action, _lock
-    with _lock:
-        if _olivetin_action is None:
-            _olivetin_action = OlivetinAction()
-        response = _olivetin_action.trigger_action(url, action_id, arguments, username, password)
-        if not response:
-            return "Olivetin Action Failed", "Olivetin Action failed with no response"
-            
-        # Parse response and determine success/failure
-        log_entry = response.get("logEntry", {})
-        action_title = log_entry.get("actionTitle", "unknown action")
-        action_icon = log_entry.get("actionIcon", "")
-        message = "Output:\n" + log_entry.get("output", "")
+    global _olivetin_action
+    
+    if _olivetin_action is None:
+        _olivetin_action = OlivetinAction()
+    response = _olivetin_action.trigger_action(url, action_id, arguments, username, password)
+    if not response:
+        return "Olivetin Action Failed", "Olivetin Action failed with no response"
         
-        if (log_entry.get("executionStarted") is True 
-        and log_entry.get("executionFinished") is True 
-        and log_entry.get("blocked") is False):
-            logger.info(f"Olivetin Action was run successfully: {action_icon} {action_title}")
-            title = f"Olivetin Action '{action_icon} {action_title}' was run successfully"
-        else:
-            logger.error(f"Olivetin Action failed: {action_icon} {action_title}")
-            title = f"Olivetin action '{action_icon} {action_title}' failed"
-        return title, message
+    # Parse response and determine success/failure
+    log_entry = response.get("logEntry", {})
+    action_title = log_entry.get("actionTitle", "unknown action")
+    action_icon = log_entry.get("actionIcon", "")
+    message = "Output:\n" + log_entry.get("output", "")
+    
+    if (log_entry.get("executionStarted") is True 
+    and log_entry.get("executionFinished") is True 
+    and log_entry.get("blocked") is False):
+        logger.info(f"Olivetin Action was run successfully: {action_icon} {action_title}")
+        title = f"Olivetin Action '{action_icon} {action_title}' was run successfully"
+    else:
+        logger.error(f"Olivetin Action failed: {action_icon} {action_title}")
+        title = f"Olivetin action '{action_icon} {action_title}' failed"
+    return title, message
 
