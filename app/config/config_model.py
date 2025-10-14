@@ -43,6 +43,10 @@ class Settings(BaseConfigModel):
     disable_container_event_message: bool = False
     compact_summary_message: bool = False
     reload_config: bool = True
+    monitor_all_containers: bool = False
+    excluded_containers: Optional[List[str]] = None
+    monitor_all_swarm_services: bool = False
+    excluded_swarm_services: Optional[List[str]] = None
 
     # modular settings:
     attach_logfile: bool = False
@@ -112,13 +116,15 @@ class OliveTinAction(BaseConfigModel):
 
     @field_validator("arguments", mode="before")
     def validate_olivetin_arguments(cls, v):
+        if not v:
+            return None
         if not isinstance(v, list):
-            logging.warning("OliveTin Action: arguments must be a list. Ignoring.")
+            logging.warning(f"OliveTin Action: arguments must be a list. Ignoring for argument(s) '{v}'.")
             return None
         filtered_args = []
         for arg in v:
             if not isinstance(arg, dict) or "name" not in arg or "value" not in arg:
-                logging.warning("OliveTin Action: arguments must have name and value. Ignoring.")
+                logging.warning(f"OliveTin Action: arguments must have name and value. Ignoring for argument '{arg}'.")
                 continue
             for key, value in arg.items():
                 try:
@@ -300,6 +306,10 @@ class NotificationsConfig(BaseConfigModel):
 
 
 class HostConfig(BaseConfigModel):
+    monitor_all_containers: bool = False
+    excluded_containers: Optional[List[str]] = None
+    monitor_all_swarm_services: bool = False
+    excluded_swarm_services: Optional[List[str]] = None
     containers: dict[str, ContainerConfig] | None = None
 
 class GlobalConfig(BaseConfigModel):
@@ -316,7 +326,7 @@ class GlobalConfig(BaseConfigModel):
         """Migrate legacy list-based container definitions to dictionary format."""
         to_convert = [
             values.get("containers"), values.get("swarm_services"),
-            ] + [values["hosts"][host].get("containers") for host in values.get("hosts", {})]
+            ] + [values["hosts"].get(host, {}).get("containers") for host in values.get("hosts", {})] if values.get("hosts") else []
         for container_object in to_convert:
             if container_object is None:
                 continue
