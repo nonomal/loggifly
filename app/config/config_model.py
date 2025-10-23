@@ -322,25 +322,49 @@ class GlobalConfig(BaseConfigModel):
     @model_validator(mode="before")
     def transform_legacy_format(cls, values):
         """Migrate legacy list-based container definitions to dictionary format."""
-        to_convert = [
-            values.get("containers"), values.get("swarm_services"),
-            ] + [values["hosts"].get(host, {}).get("containers") for host in values.get("hosts", {})] if values.get("hosts") else []
-        for container_object in to_convert:
-            if container_object is None:
-                continue
-            if isinstance(container_object, list):
-                container_object = {name: {} for name in container_object}
-            for container in container_object:
-                if isinstance(container_object.get(container), list):
-                    container_object[container] = {
-                        "keywords": container_object[container],
-                    }
-                elif container_object.get(container) is None:
-                    container_object[container] = {
-                        "keywords": [],
-                    }
-        return values
-    
+
+        # Helper function to process a container object
+        def process_container_dict(container_dict):
+            """Convert list format to dict and handle None values."""
+            if not isinstance(container_dict, dict):
+                return
+            for container_name in list(container_dict.keys()):
+                container_config = container_dict[container_name]
+                if isinstance(container_config, list):
+                    # Legacy format: direct keywords list
+                    container_dict[container_name] = {"keywords": container_config}
+                elif container_config is None:
+                    # None value: create empty keywords list
+                    container_dict[container_name] = {"keywords": []}
+
+        # Process top-level containers
+        if values.get("containers"):
+            if isinstance(values["containers"], list):
+                # Convert list of container names to dict
+                values["containers"] = {name: {"keywords": []} for name in values["containers"]}
+            else:
+                process_container_dict(values["containers"])
+
+        # Process top-level swarm_services
+        if values.get("swarm_services"):
+            if isinstance(values["swarm_services"], list):
+                # Convert list of service names to dict
+                values["swarm_services"] = {name: {"keywords": []} for name in values["swarm_services"]}
+            else:
+                process_container_dict(values["swarm_services"])
+
+        # Process host-specific containers
+        if values.get("hosts"):
+            for host_name, host_config in values["hosts"].items():
+                if host_config and host_config.get("containers"):
+                    if isinstance(host_config["containers"], list):
+                        # Convert list of container names to dict
+                        host_config["containers"] = {name: {"keywords": []} for name in host_config["containers"]}
+                    else:
+                        process_container_dict(host_config["containers"])
+
+        return values    
+
     @model_validator(mode="after")
     def check_at_least_one(self) -> "GlobalConfig":
         """Ensure at least one container or swarm service and at least one keyword is configured."""
