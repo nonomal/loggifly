@@ -25,6 +25,8 @@ If you want to set a label to your _mounted docker socket_ you can do so by addi
 
 ### Assign Containers to Hosts
 
+#### Option 1: Assign containers to hosts via the `hosts` section
+
 You can easily configure your containers in the `config.yaml` file under `hosts.<your-hostname>`.
 The [labels](#labels) section above shows how the hostname is constructed.
 
@@ -52,7 +54,25 @@ In the above example `container1` will only be monitored on host `foo` and `cont
 When a container is configured globally and on a specific host, the per-host configuration takes precedence.
 :::
 
+##### Monitor all containers on specific hosts
 
+The [settings](./config_sections/settings#monitor-all-containers-swarm-services) `monitor_all_containers` and `excluded_containers` also work per host
+
+```yaml
+hosts:
+  foo:
+    monitor_all_containers: true
+    excluded_containers:
+      - container4
+  bar:
+    containers:
+      container5:
+        keywords:
+          - error
+```
+
+
+#### Option 2: Assign containers to hosts via the `hosts` field of the container configuration
 
 Another way to assign containers to specific hosts is by providing a comma-separated list of labels/hostnames in the `hosts` field of the container configuration.<br> 
 When no hosts are set LoggiFly will look for the container on _all_ configured remote hosts.
