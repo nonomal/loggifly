@@ -368,7 +368,9 @@ class GlobalConfig(BaseConfigModel):
     @model_validator(mode="after")
     def check_at_least_one(self) -> "GlobalConfig":
         """Ensure at least one container or swarm service and at least one keyword is configured."""
-        configs = [self.containers, self.swarm_services] + [h.containers for h in self.hosts.values() if h.containers] if self.hosts else []
+        configs = [self.containers, self.swarm_services]
+        if self.hosts:
+            configs.extend([h.containers for h in self.hosts.values() if h.containers])
         if not any(configs):
             logging.warning("You haven't configured any containers or swarm services via a config file or environment variables. Ignore this warning if you are using Docker labels to configure everything.")
         all_keywords = copy.deepcopy(self.global_keywords.keywords)
