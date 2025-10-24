@@ -19,6 +19,10 @@ Except for container / keyword specific settings and regex patterns a lot of the
 | `APPRISE_URL`                   | Any [Apprise-compatible URL](https://github.com/caronc/apprise/wiki)  | _N/A_    |
 | `CONTAINERS`                    | A comma separated list of containers. These are added to the containers from the `config.yaml` (if you are using one).| _N/A_     |
 | `SWARM_SERVICES`              |  A comma separated list of docker swarm services to monitor. | _N/A_     |
+| `MONITOR_ALL_CONTAINERS`      | Monitor all containers. | False     |
+| `MONITOR_ALL_SWARM_SERVICES`  | Monitor all swarm services. | False     |
+| `EXCLUDED_CONTAINERS`         | A comma separated list of containers that should not be monitored. To be used with `MONITOR_ALL_CONTAINERS` | _N/A_     |
+| `EXCLUDED_SWARM_SERVICES`     | A comma separated list of swarm services that should not be monitored. To be used with `MONITOR_ALL_SWARM_SERVICES` | _N/A_     |
 | `LOGGIFLY_MODE`              | Set this variable to `swarm` when wanting to use LoggiFly in swarm mode | _N/A_     |
 | `GLOBAL_KEYWORDS`       | Keywords that will be monitored for all containers. Overrides `global_keywords.keywords` from the `config.yaml`.| _N/A_     |
 | `GLOBAL_KEYWORDS_WITH_ATTACHMENT`| Notifications triggered by these global keywords have a logfile attached. | _N/A_     |
