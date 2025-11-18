@@ -1,6 +1,7 @@
 import os
 import logging
 import copy
+from docker import errors
 import yaml
 from .config_model import (
     GlobalConfig,
@@ -12,6 +13,12 @@ from .config_model import (
 from constants import MonitorType
 
 logging.getLogger(__name__)
+
+
+class ConfigLoadError(Exception):
+    """Raised when config file exists but cannot be loaded or parsed"""
+    pass
+
 
 """
 This module handles configuration loading and validation using Pydantic models. 
@@ -46,27 +53,34 @@ def load_config(official_path="/config/config.yaml"):
     yaml_config = None
     legacy_path = "/app/config.yaml"
     paths = [official_path, legacy_path]
-    
+    error_messages = []
     # Try to load YAML config from available paths
-    for path in paths: 
+    for path in paths:
         logging.debug(f"Trying path: {path}")
         if os.path.isfile(path):
+            config_path = path
             try:
                 with open(path, "r") as file:
                     yaml_config = yaml.safe_load(file)
-                    config_path = path
                     break
-            except FileNotFoundError:
-                logging.info(f"Error loading the config.yaml file from {path}")
             except yaml.YAMLError as e:
-                logging.error(f"Error parsing the YAML file: {e}")
+                # YAML exists but is broken - this is FATAL
+                error_messages.append(f"Error parsing YAML file at {path}: {e}")
+                logging.error(f"Error parsing YAML file at {path}: {e}")
+                # raise ConfigLoadError(f"Invalid YAML in {path}: {e}") from e
             except Exception as e:
-                logging.error(f"Unexpected error loading the config.yaml file: {e}")
+                logging.error(f"Unexpected error loading {path}: {e}")
+                error_messages.append(f"Failed to load {path}: {e}")
+                # raise ConfigLoadError(f"Failed to load {path}: {e}") from e
         else:
             logging.debug(f"The path {path} does not exist.")
 
+    # If no file found at any path, continue with empty config (startup-friendly)
     if yaml_config is None:
-        logging.warning(f"The config.yaml could not be loaded.")
+        if error_messages:
+            # Don't load config if there are errors with the config file
+            raise ConfigLoadError("\n".join(error_messages))
+        logging.warning(f"No config.yaml found in any location")
         yaml_config = {}
     else:
         logging.info(f"The config.yaml file was found in {config_path}.")

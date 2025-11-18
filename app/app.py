@@ -16,7 +16,7 @@ from typing import Any
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from config.load_config import load_config, format_pydantic_error
+from config.load_config import load_config, format_pydantic_error, ConfigLoadError
 from docker_monitor import DockerLogMonitor
 from notifier import send_notification
 
@@ -132,14 +132,20 @@ class ConfigHandler(FileSystemEventHandler):
 
     def _trigger_reload(self):
         """Execute the actual config reload after debounce period."""
-        logging.getLogger().setLevel(getattr(logging, self.config.settings.log_level.upper(), logging.INFO))
-        logging.info(f"Log-Level set to {self.config.settings.log_level}")
         logging.info("Config change detected, reloading config...")
         try:
-            self.config, _ = load_config()
-        except ValidationError as e:
-            logging.critical(f"Error reloading config (using old config): {format_pydantic_error(e)}")
+            new_config, _ = load_config()
+        except (ValidationError, ConfigLoadError) as e:
+            if isinstance(e, ValidationError):
+                logging.critical(f"Config validation failed (keeping old config): {format_pydantic_error(e)}")
+            else:
+                logging.critical("Config loading failed (keeping old config)")
             return
+
+        # Only update if loading and validation succeeded
+        logging.getLogger().setLevel(getattr(logging, self.config.settings.log_level.upper(), logging.INFO))
+        logging.info(f"Log-Level set to {self.config.settings.log_level}")
+        self.config = new_config
         messages = []
         for monitor in self.monitor_instances:
             messages.append(monitor.reload_config(self.config))
@@ -324,8 +330,11 @@ def start_loggifly():
     ensure_config_template()
     try:
         config, path = load_config()
-    except ValidationError as e:
-        logging.critical(f"Error loading Config: {format_pydantic_error(e)}")
+    except (ValidationError, ConfigLoadError) as e:
+        if isinstance(e, ValidationError):
+            logging.critical(f"Config validation failed: {format_pydantic_error(e)}")
+        else:
+            logging.critical("Config loading failed")
         logging.info("Waiting 5s to prevent restart loop...")
         time.sleep(5)
         sys.exit(1)
