@@ -51,7 +51,9 @@ class Settings(BaseConfigModel):
     # modular settings:
     attach_logfile: bool = False
     notification_cooldown: int = 5
-    notification_title: str = "default"
+    notification_title: Optional[str] = None # legacy
+    title_template: Optional[str] = None
+    message_template: Optional[str] = None
     action_cooldown: Optional[int] = 300
     attachment_lines: int = 20
     hide_regex_in_title: Optional[bool] = False
@@ -85,7 +87,9 @@ class ModularSettings(BaseConfigModel):
 
     attachment_lines: Optional[int] = None
     notification_cooldown: Optional[int] = None
-    notification_title: Optional[str] = None
+    notification_title: Optional[str] = None # legacy
+    title_template: Optional[str] = None
+    message_template: Optional[str] = None
     action_cooldown: Optional[int] = None
     attach_logfile: Optional[bool] = None
     excluded_keywords: Optional[List[Union[str, ExcludedKeywords]]] = None
@@ -139,9 +143,8 @@ class OliveTinAction(BaseConfigModel):
 
 class KeywordItemBase(ModularSettings):
     """Base class for keyword items with common fields for actions and templates."""
-    json_template: Optional[str] = None
+    json_template: Optional[str] = None # legacy
     action: Optional[str] = None
-    # olivetin_action_id: Optional[str] = None
     olivetin_actions: Optional[List[OliveTinAction]] = None
 
     @field_validator("action")
@@ -172,8 +175,7 @@ class RegexItem(KeywordItemBase):
     Template allows for notification formatting using named capturing groups.
     """
     regex: str
-    template: Optional[str] = None
-
+    template: Optional[str] = None # legacy
 
 class KeywordItem(KeywordItemBase):
     """

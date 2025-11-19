@@ -392,7 +392,7 @@ class LogProcessor:
 
         # Send notification if not disabled
         if not disable_notifications:
-            title = get_notification_title(msg_cnf, action_result)
+            title = get_notification_title(msg_cnf, log_line, action_result)
             self._send_message(title, msg_cnf["message"], msg_cnf, attachment=attachment)
 
         # Trigger OliveTin action if configured
@@ -452,9 +452,43 @@ class LogProcessor:
                                                 lines=lines)
 
 
-def get_notification_title(message_config: dict, action_result: Optional[str] = None):
+class SafeDict(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.missing_keys = set()
+
+    def __missing__(self, key):
+        self.missing_keys.add(key)
+        return "{" + key + "}"
+
+
+def get_template_fields(message_config: dict, log_line: str, mode=None):
+    possible_template_fields = {}
+    if not mode or mode == "json":
+        # Add JSON fields to template fields if log line is JSON
+        try:
+            json_log_entry = json.loads(log_line)
+            possible_template_fields = json_log_entry           
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+        except Exception as e:
+            logging.error(f"Unexpected Error parsing log line as JSON: {log_line} {e}")
+    if not mode or mode == "regex":
+        # Apply template in case of regex named capturing groups
+        if message_config.get("regex"):
+            match = re.search(message_config["regex"], log_line, re.IGNORECASE)
+            if match:
+                groups = match.groupdict()
+                for key, value in groups.items():
+                    if key in possible_template_fields:
+                        continue
+                    possible_template_fields[key] = value
+    return possible_template_fields
+
+def get_notification_title(message_config: dict, log_line: str, action_result: Optional[str] = None):
     """
-    Generate a notification title.
+    Generate a notification title. 
+    'notification_title' is the legacy title template. 'title_template' is the new one.
     
     Args:
         message_config: Message configuration dictionary
@@ -465,25 +499,37 @@ def get_notification_title(message_config: dict, action_result: Optional[str] = 
     """
     title = ""
     keywords_found = message_config.get("keywords_found", "")
-    notification_title_config = message_config.get("notification_title", "default")
-    unit_name = message_config.get("unit_name", "") 
-
-    # Use custom title template if configured
-    if notification_title_config.strip().lower() != "default":
-        template = ""
+    title_template = message_config.get("title_template")
+    notification_title = message_config.get("notification_title", "default").strip()
+    unit_name = message_config.get("unit_name", "").strip() or ""
+    template_fields = {}
+    template = None
+    if title_template:
+        template_fields = get_template_fields(message_config, log_line)
+        template = title_template
+    elif notification_title and notification_title.lower() != "default":
+        template = notification_title
+    if template:
         try:
             keywords = ', '.join(f"'{word}'" for word in keywords_found)
-            template = notification_title_config.strip()
-            template_fields = {
+            new_template_fields = {
                 "container": unit_name,
                 "keywords": keywords, 
                 "keyword": keywords, 
             }
-            title = template.format(**template_fields)
+            for key, value in new_template_fields.items():
+                if key in template_fields:
+                    continue
+                template_fields[key] = value
+            safe_dict = SafeDict(template_fields)
+            title = template.format_map(safe_dict)
+            if safe_dict.missing_keys:
+                logging.warning(f"Missing keys in template for title: {safe_dict.missing_keys}")
+            # logging.debug(f"Successfully applied this template to the notification title: {title}")
         except KeyError as e:
-            logging.error(f"Missing key in template: {template}. You can only put these keys in the template: 'container, keywords'. Error: {e}")
+            logging.error(f"Missing key in template: {title}. You can only put these keys in the template: 'container, keywords'. Error: {e}")
         except Exception as e:
-            logging.error(f"Error trying to apply this template for the notification title: {template} {e}")
+            logging.error(f"Error trying to apply this template for the notification title: {title} {e}")
 
     # Generate default title if no template or template failed
     if not title and isinstance(keywords_found, list):
@@ -497,13 +543,13 @@ def get_notification_title(message_config: dict, action_result: Optional[str] = 
             joined_keywords = ', '.join(f"'{word}'" for word in keywords_found)
             title = f"The following keywords were found in {unit_name}: {joined_keywords}"
 
-    # Append action result if available
-    if action_result is not None:
-        title = f"{title} ({action_result})"
-
     # Fallback title
     if not title:
         title = f"{unit_name}: {keywords_found}"
+        
+    # Append action result if available
+    if action_result is not None:
+        title = f"{title} ({action_result})"
 
     return title
 
@@ -511,40 +557,30 @@ def get_notification_title(message_config: dict, action_result: Optional[str] = 
 def message_from_template(keyword_dict, log_line):
     """
     Format a message using a template:
+    'json_template' and 'template' are legacy templates. 
+    The new 'message_template' handles both JSON and regex named capturing groups.
     - For 'json_template', parse the log line as JSON and fill the template with its fields.
     - For 'template' with 'regex', use named capturing groups from the regex to fill the template.
     'original_log_line' is always available in the template context.
     """
     message = log_line
-
+    template = None
+    template_fields = {}
     if keyword_dict.get("json_template"):
+        template_fields = get_template_fields(keyword_dict, log_line, mode="json")
         template = keyword_dict.get("json_template")
-        try:
-            json_log_entry = json.loads(log_line)
-            json_log_entry["original_log_line"] = log_line  # Add original log line to JSON data
-            logging.debug(f"TEMPLATE: {template}")
-            message = template.format(**json_log_entry)
-            logging.debug(f"Successfully applied this template: {template}")
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            logging.error(f"Error parsing log line as JSON: {log_line}")
-        except KeyError as e:
-            logging.error(f"KeyError: {e} in template: {template} with log line: {log_line}")
-            logging.debug(f"Traceback: {traceback.format_exc()}")
-        except Exception as e:
-            logging.error(f"Unexpected Error trying to parse a JSON log line with template {template}: {e}")
-            logging.error(f"Details: {traceback.format_exc()}")
     elif keyword_dict.get("regex") and keyword_dict.get("template"):
+        template_fields = get_template_fields(keyword_dict, log_line, mode="regex")
         template = keyword_dict.get("template")
-        match = re.search(keyword_dict["regex"], log_line, re.IGNORECASE)
-        if match:
-            groups = match.groupdict()
-            groups.setdefault("original_log_line", log_line)
-            try:
-                message = template.format(**groups)
-                logging.debug(f"Successfully applied this template: {template}")
-                return message
-            except KeyError as e:
-                logging.error(f"Key Error for template '{template}': {e}")
-            except Exception as e:
-                logging.error(f"Error applying template {template}: {e}")
+    elif keyword_dict.get("message_template"):
+        template_fields = get_template_fields(keyword_dict, log_line)
+        template = keyword_dict.get("message_template")
+    if not template:
+        return log_line
+    template_fields["original_log_line"] = log_line if not template_fields.get("original_log_line") else template_fields["original_log_line"]
+    safe_dict = SafeDict(template_fields)
+    message = template.format_map(safe_dict)
+    if safe_dict.missing_keys:
+        logging.warning(f"Missing keys in template: {safe_dict.missing_keys}")
+    logging.debug(f"Successfully applied this template to the message: {template}")
     return message
