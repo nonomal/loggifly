@@ -5,10 +5,12 @@ from pydantic import (
     ConfigDict,
     SecretStr,
     ValidationError,
+    Field,
 )
+from typing import Literal
 from enum import Enum
 from constants import Actions
-from typing import List, Optional, Union, ClassVar, Annotated
+from typing import List, Optional, Union, ClassVar, Annotated, Any
 import logging
 import re
 import copy
@@ -30,7 +32,34 @@ class ExcludedKeywords(BaseConfigModel):
     keyword: Optional[str] = None
     regex: Optional[str] = None
 
+class NtfyViewAction(BaseConfigModel):
+    action: Literal["view"] = "view"
+    label: str
+    url: str
+    clear: Optional[bool] = False 
 
+class NtfyBroadcastAction(BaseConfigModel):
+    action: Literal["broadcast"] = "broadcast"
+    label: str
+    clear: Optional[bool] = False 
+
+    intent: Optional[str] = None
+    extras: Optional[dict] = None
+
+class NtfyHttpAction(BaseConfigModel):
+    action: Literal["http"] = "http"
+    label: str
+    url: str
+    clear: Optional[bool] = False 
+
+    method: Optional[str] = None
+    headers: Optional[dict] = None
+    body: Optional[str] = None
+
+NtfyAction = Annotated[
+    Union[NtfyViewAction, NtfyHttpAction, NtfyBroadcastAction],
+    Field(discriminator="action")
+]
 class Settings(BaseConfigModel):    
     """
     Application-wide settings.
@@ -81,6 +110,7 @@ class ModularSettings(BaseConfigModel):
     ntfy_token: Optional[SecretStr] = None
     ntfy_username: Optional[str] = None
     ntfy_password: Optional[SecretStr] = None
+    ntfy_actions: Optional[List[NtfyAction]] = None
     apprise_url: Optional[SecretStr] = None
     webhook_url: Optional[str] = None
     webhook_headers: Optional[dict] = None
@@ -103,6 +133,12 @@ class ModularSettings(BaseConfigModel):
     @field_validator("ntfy_priority", mode="before")
     def validate_priority(cls, v):
         return validate_priority(v)
+        
+    @field_validator("ntfy_actions", mode="before")
+    def validate_ntfy_actions(cls, v):
+        if v and isinstance(v, list):
+            return validate_ntfy_actions(v)
+        return v   
 
     @field_validator("action_cooldown", mode="before")
     def validate_action_cooldown(cls, v):
@@ -268,7 +304,6 @@ class GlobalKeywords(BaseConfigModel, KeywordBase):
     """Global keyword configuration that applies to all monitored containers."""
     pass
 
-
 class NtfyConfig(BaseConfigModel):
     url: str 
     topic: str 
@@ -277,11 +312,22 @@ class NtfyConfig(BaseConfigModel):
     password: Optional[SecretStr] = None
     priority: Optional[Union[str, int]] = 3
     tags: Optional[str] = "kite,mag"
+    actions: Optional[List[NtfyAction]] = None
+
 
     @field_validator("priority", mode="before")
     def validate_priority(cls, v):
         """Validate ntfy priority value."""
         return validate_priority(v)
+
+    @field_validator("actions", mode="before")
+    def validate_actions(cls, v):
+        if not v:
+            return v
+        if v and isinstance(v, list):
+            return validate_ntfy_actions(v)
+        logging.warning("Ntfy actions: expected a list, got %r – ignoring", v)
+        return None
 
 
 class AppriseConfig(BaseConfigModel):  
@@ -449,3 +495,36 @@ def get_kw_or_rgx(item):
         elif "keyword_group" in item:
             return f"keyword_group: '{item['keyword_group']}'"
     return "unknown"
+
+def validate_ntfy_actions(actions: list[Any]) -> list[dict]:
+    possible_actions = ["http", "broadcast", "view"]
+    filtered_actions = []
+    for idx, raw in enumerate(actions, 1):
+        if isinstance(raw, (NtfyViewAction, NtfyHttpAction, NtfyBroadcastAction)):
+            logging.debug(f"Ntfy Action: {raw}")
+            if len(filtered_actions) >= 3:
+                logging.warning(f"Ntfy Action: You can only have up to 3 actions. Ignoring additional actions: {actions[idx-1:]}")
+                break
+            filtered_actions.append(raw.model_dump(exclude_none=True))
+            continue
+        if not isinstance(raw, dict):
+            logging.warning(f"Ntfy Action: action must be a dictionary. Ignoring action '{raw}'.")
+            continue
+        action_type = raw.get("action")
+        if not action_type or action_type not in possible_actions:
+            logging.warning(f"Ntfy Action: action must be one of {possible_actions}. Ignoring action '{raw}'.")
+            continue
+        if not raw.get("label"):
+            logging.warning(f"Ntfy Action: label is required. Ignoring action '{raw}'.")
+            continue
+        if action_type in ["http", "view"] and not raw.get("url"):
+            logging.warning(f"Ntfy Action: url is required for action '{raw['action']}'. Ignoring action '{raw}'.")
+            continue
+        if action_type == "broadcast" and not raw.get("intent"):
+            logging.warning(f"Ntfy Action: intent is required for action '{raw['action']}'. Ignoring action '{raw}'.")
+            continue
+        if len(filtered_actions) >= 3:
+            logging.warning(f"Ntfy Action: You can only have up to 3 actions. Ignoring additional actions: {actions[idx-1:]}")
+            break
+        filtered_actions.append(raw)
+    return filtered_actions

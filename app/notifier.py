@@ -23,6 +23,74 @@ def replace_emojis_with_rfc2047(text):
     """Replace all emojis in a text with RFC 2047 encoded forms."""
     return EMOJI_PATTERN.sub(emoji_to_rfc2047, text)
 
+def build_ntfy_action_header(actions: list) -> str:
+    def _needs_quotes(s: str) -> bool:
+        return any(ch in s for ch in [',', ';'])
+
+    def _quote_if_needed(s: str) -> str:
+        if not _needs_quotes(s):
+            return s
+        if "'" in s and '"' not in s:
+            q = '"'
+        else:
+            q = "'"
+        return f"{q}{s.replace(q, '\\' + q)}{q}"
+
+    def _flatten_map(prefix: str, m: dict[str, str]) -> list[str]:
+        out = []
+        for k, v in m.items():
+            if v is None:
+                continue
+            out.append(f"{prefix}.{k}={_quote_if_needed(str(v))}")
+        return out
+
+    action_list = []
+    header = ""
+    for idx, a in enumerate(actions, 1):
+        if idx > 3:
+            logging.warning(f"Ntfy Action: You can only have up to 3 actions. Only using the first 3 actions: '{actions[:3]}'.")
+            break
+        if a.get('action') == 'view':
+            if not a.get('url') or not a.get('label'):
+                logging.warning(f"Ntfy Action: url and label are required for view action. Ignoring action '{a}'.")
+                continue
+            parts = ["view", _quote_if_needed(a.get('label')), _quote_if_needed(a.get('url'))]
+            if a.get('clear') is True:
+                parts.append("clear=true")
+            action_list.append(", ".join(parts))
+
+        elif a.get('action') == 'http':
+            if not a.get('url') or not a.get('label'):
+                logging.warning(f"Ntfy Action: url and label are required for HTTP action. Ignoring action '{a}'.")
+                continue
+            parts = ["http", _quote_if_needed(a.get('label')), _quote_if_needed(a.get('url'))]
+            if a.get('method') and a.get('method') != "POST":
+                parts.append(f"method={_quote_if_needed(a.get('method'))}")
+            if a.get('headers'):
+                parts.extend(_flatten_map("headers", a.get('headers')))
+            if a.get('body') is not None:
+                parts.append(f"body={_quote_if_needed(a.get('body'))}")
+            if a.get('clear') is True:
+                parts.append("clear=true")
+            action_list.append(", ".join(parts))
+
+        elif a.get('action') == 'broadcast':
+            if not a.get('label'):
+                logging.warning(f"Ntfy Action: label is required for broadcast action. Ignoring action '{a}'.")
+                continue
+            parts = ["broadcast", _quote_if_needed(a.get('label'))]
+            # Only send default intent if it differs from the default
+            if a.get('intent') and a.get('intent') != "io.heckel.ntfy.USER_ACTION":
+                parts.append(f"intent={_quote_if_needed(a.get('intent'))}")
+            if a.get('extras'):
+                parts.extend(_flatten_map("extras", a.get('extras')))
+            if a.get('clear') is True:
+                parts.append("clear=true")
+            action_list.append(", ".join(parts))
+    logger.debug(f"ACTIONS: {actions}")
+    header = ";".join(action_list) if actions else ""
+    return header
+
 def get_ntfy_config(config: GlobalConfig, message_config, unit_config) -> dict:
     """
     Aggregate ntfy notification configuration from global, container, and message-specific sources.
@@ -37,7 +105,8 @@ def get_ntfy_config(config: GlobalConfig, message_config, unit_config) -> dict:
         "token": None,
         "username": None,
         "password": None,
-        "authorization": ""
+        "authorization": "",
+        "actions": None
     }
 
     global_config = config.notifications.ntfy.model_dump(exclude_none=True) if config.notifications.ntfy else {}
@@ -188,7 +257,10 @@ def send_ntfy_notification(ntfy_config, message, title, attachment: dict | None 
     }
     if ntfy_config.get('authorization'):
         headers["Authorization"] = f"{ntfy_config.get('authorization')}"
-
+    if ntfy_config.get('actions'):
+        action_header = build_ntfy_action_header(ntfy_config.get('actions', []))
+        logger.debug(f"ACTION HEADER: {action_header}")
+        headers["Actions"] = action_header
     try:
         if attachment and (file_content := attachment.get("content", "").encode("utf-8")):
             headers["Filename"] = attachment.get("file_name", "attachment.txt")
